@@ -1,0 +1,2309 @@
+import { useState, useRef, useEffect, useCallback } from "react";
+
+// ─── SheetJS ──────────────────────────────────────────────────────────────────
+async function loadXLSX() {
+  if (window.XLSX) return window.XLSX;
+  await new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.onload = res; s.onerror = rej; document.head.appendChild(s);
+  });
+  return window.XLSX;
+}
+async function excelToText(file) {
+  const XLSX = await loadXLSX();
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
+  const lines = [];
+  wb.SheetNames.forEach(name => {
+    const csv = XLSX.utils.sheet_to_csv(wb.Sheets[name], { skipHidden: true });
+    if (csv.replace(/,/g, "").trim()) { lines.push(`=== ${name} ===`); lines.push(csv.slice(0, 6000)); }
+  });
+  return lines.join("\n");
+}
+
+// ─── PDF.js ───────────────────────────────────────────────────────────────────
+async function loadPdfJs() {
+  if (window.pdfjsLib) return window.pdfjsLib;
+  await new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+    s.onload = res; s.onerror = rej; document.head.appendChild(s);
+  });
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  return window.pdfjsLib;
+}
+async function pdfToPages(file, onProg, sig) {
+  const lib = await loadPdfJs();
+  const buf = await file.arrayBuffer();
+  if (sig?.aborted) throw new DOMException("Aborted", "AbortError");
+  const pdf = await lib.getDocument({ data: new Uint8Array(buf) }).promise;
+  const n = pdf.numPages, mb = file.size / 1048576;
+  let sc = 1.2, q = 0.72;
+  if (n > 4 || mb > 10) { sc = 1.0; q = 0.62; }
+  if (n > 8 || mb > 20) { sc = 0.8; q = 0.55; }
+  const pages = [];
+  for (let i = 1; i <= n; i++) {
+    if (sig?.aborted) throw new DOMException("Aborted", "AbortError");
+    const page = await pdf.getPage(i);
+    const vp = page.getViewport({ scale: sc });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.min(vp.width, 1024); canvas.height = Math.min(vp.height, 1024);
+    await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+    let b64 = canvas.toDataURL("image/jpeg", q).split(",")[1], qq = q;
+    while (b64.length * 0.75 > 3.5e6 && qq > 0.3) { qq -= 0.08; b64 = canvas.toDataURL("image/jpeg", qq).split(",")[1]; }
+    pages.push({ b64, preview: canvas.toDataURL("image/jpeg", Math.min(qq, 0.75)) });
+    onProg?.(Math.round(i / n * 100));
+  }
+  return { pages, type: "pdf", filename: file.name };
+}
+async function imageToB64(file, onProg, sig) {
+  return new Promise((res, rej) => {
+    if (sig?.aborted) { rej(new DOMException("Aborted", "AbortError")); return; }
+    sig?.addEventListener("abort", () => rej(new DOMException("Aborted", "AbortError")), { once: true });
+    const reader = new FileReader();
+    reader.onerror = () => rej(new Error("read"));
+    reader.onload = e => {
+      const img = new Image();
+      img.onerror = () => rej(new Error("decode"));
+      img.onload = () => {
+        try {
+          const canvas = document.createElement("canvas");
+          let { width: w, height: h } = img; const max = 1024;
+          if (w > max || h > max) { const r = Math.min(max / w, max / h); w = Math.round(w * r); h = Math.round(h * r); }
+          canvas.width = w; canvas.height = h;
+          canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+          let qq = 0.72, b64 = canvas.toDataURL("image/jpeg", qq).split(",")[1];
+          while (b64.length * 0.75 > 2.5e6 && qq > 0.3) { qq -= 0.1; b64 = canvas.toDataURL("image/jpeg", qq).split(",")[1]; }
+          const preview = canvas.toDataURL("image/jpeg", 0.75);
+          onProg?.(100);
+          res({ b64, preview, type: "image", filename: file.name, pages: [{ b64, preview }] });
+        } catch (err) { rej(err); }
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+// ─── DWG binary string extractor (no API needed) ─────────────────────────────
+async function parseDWGBinary(file) {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+
+  // Версія файлу (перші 6 байт — ASCII)
+  const version = String.fromCharCode(...bytes.slice(0, 6));
+  const versionMap = {
+    "AC1006": "R10", "AC1009": "R11/R12", "AC1012": "R13",
+    "AC1014": "R14", "AC1015": "2000", "AC1018": "2004",
+    "AC1021": "2007", "AC1024": "2010", "AC1027": "2013",
+    "AC1032": "2018", "AC1037": "2021", "AC1043": "2025",
+  };
+  const ver = versionMap[version] || version;
+
+  // Витягуємо ASCII рядки (мін 3 символи, друковані символи)
+  const asciiStrings = [];
+  let run = "";
+  for (let i = 6; i < bytes.length; i++) {
+    const c = bytes[i];
+    if (c >= 32 && c <= 126) {
+      run += String.fromCharCode(c);
+    } else {
+      if (run.length >= 3) asciiStrings.push(run.trim());
+      run = "";
+    }
+  }
+  if (run.length >= 3) asciiStrings.push(run.trim());
+
+  // Витягуємо UTF-16LE рядки (AutoCAD 2007+ зберігає текст як UTF-16)
+  const utf16Strings = [];
+  for (let i = 0; i < bytes.length - 4; i++) {
+    // Шукаємо UTF-16LE послідовності: буква\0 буква\0 ...
+    if (bytes[i] >= 32 && bytes[i] <= 126 && bytes[i+1] === 0 &&
+        bytes[i+2] >= 32 && bytes[i+2] <= 126 && bytes[i+3] === 0) {
+      let s = "";
+      let j = i;
+      while (j < bytes.length - 1 && bytes[j+1] === 0 && bytes[j] >= 32 && bytes[j] <= 126) {
+        s += String.fromCharCode(bytes[j]);
+        j += 2;
+      }
+      if (s.length >= 3) { utf16Strings.push(s.trim()); i = j - 1; }
+    }
+  }
+
+  // Фільтруємо корисні рядки
+  const allStrings = [...new Set([...asciiStrings, ...utf16Strings])];
+
+  // Видаляємо технічний сміт — залишаємо тільки осмислені рядки
+  const isUseful = s => {
+    if (s.length < 2) return false;
+    // Фільтр: тільки рядки з літерами (не просто цифри/символи)
+    if (!/[a-zA-Zа-яА-ЯіІїЇєЄ]/.test(s) && !/^\d+([.,]\d+)?$/.test(s)) return false;
+    // Видаляємо типові бінарні артефакти
+    if (/^[A-F0-9]{8,}$/.test(s)) return false; // hex dump
+    if (s.split("").every(c => c === s[0])) return false; // повтор одного символу
+    return true;
+  };
+
+  const useful = allStrings.filter(isUseful);
+
+  // Класифікація рядків
+  const layers = useful.filter(s =>
+    /^[A-Z0-9_\-]+$/.test(s) && s.length <= 30 && !s.includes(" ")
+  ).slice(0, 40);
+
+  const dims = useful.filter(s =>
+    /^\d{2,5}([.,]\d{1,3})?$/.test(s) && parseFloat(s) > 10 && parseFloat(s) < 99999
+  ).slice(0, 50);
+
+  const texts = useful.filter(s =>
+    s.length >= 3 && s.length <= 200 &&
+    !layers.includes(s) && !dims.includes(s) &&
+    /[a-zA-Zа-яА-ЯіІїЇєЄ]/.test(s)
+  ).slice(0, 100);
+
+  // Формуємо звіт
+  let out = `=== DWG ФАЙЛ: ${file.name} ===\n`;
+  out += `Версія AutoCAD: ${ver}\n`;
+  out += `Розмір файлу: ${(file.size / 1024).toFixed(0)} KB\n`;
+  out += `Знайдено рядків: ${useful.length}\n\n`;
+
+  if (layers.length) out += `ШАРИ/БЛОКИ (${layers.length}):\n${layers.map(l => "  • " + l).join("\n")}\n\n`;
+  if (dims.length) out += `РОЗМІРИ (мм/одиниці, ${dims.length}):\n  ${dims.join(", ")}\n\n`;
+  if (texts.length) out += `ТЕКСТОВІ ПІДПИСИ (${texts.length}):\n${texts.map(t => "  • " + t).join("\n")}\n`;
+
+  if (useful.length < 5) {
+    out += "\n⚠️ Мало тексту витягнуто. Можливо зашифрований або пошкоджений файл.\n";
+    out += "Рекомендація: збережіть як DXF з AutoCAD для кращого читання.\n";
+  }
+
+  return out;
+}
+function parseDXF(text) {
+  const lines = text.split(/\r?\n/);
+  const sections = { texts: [], dimensions: [], layers: new Set(), entities: [] };
+  let i = 0;
+  while (i < lines.length - 1) {
+    const code = parseInt((lines[i] || "").trim(), 10);
+    const val = (lines[i + 1] || "").trim();
+    i += 2;
+    if (isNaN(code)) continue;
+    if (code === 8) sections.layers.add(val);
+    if (code === 1 && val && !val.startsWith("{") && val.length > 1) sections.texts.push(val);
+    if (code === 3 && val && val.length > 2) sections.texts.push(val);
+    if (code === 42 && parseFloat(val) > 0) sections.dimensions.push(parseFloat(val).toFixed(0));
+    if (code === 0 && ["LINE","ARC","CIRCLE","LWPOLYLINE","POLYLINE","SPLINE","INSERT","DIMENSION","TEXT","MTEXT","HATCH"].includes(val)) {
+      sections.entities.push(val);
+    }
+  }
+  const entityCounts = {};
+  sections.entities.forEach(e => { entityCounts[e] = (entityCounts[e] || 0) + 1; });
+  const uniqueTexts = [...new Set(sections.texts)].filter(t => t.trim().length > 0).slice(0, 120);
+  const uniqueDims = [...new Set(sections.dimensions)].slice(0, 60);
+  const layers = [...sections.layers].filter(l => l && l !== "0").slice(0, 40);
+  let out = "=== DXF КРЕСЛЕННЯ ===\n";
+  if (layers.length) out += "ШАРИ (" + layers.length + "): " + layers.join(", ") + "\n";
+  if (Object.keys(entityCounts).length) out += "ЕЛЕМЕНТИ: " + Object.entries(entityCounts).map(function(e) { return e[0] + "x" + e[1]; }).join(", ") + "\n";
+  if (uniqueDims.length) out += "РОЗМІРИ (мм): " + uniqueDims.join(", ") + "\n";
+  if (uniqueTexts.length) out += "ПІДПИСИ:\n" + uniqueTexts.map(function(t) { return "  • " + t; }).join("\n") + "\n";
+  return out || "[DXF порожній]";
+}
+
+async function processFile(file, onProg, sig) {
+  if (!file) return null;
+  const nm = file.name.toLowerCase();
+  if (nm.endsWith(".dxf")) {
+    onProg?.(30);
+    try {
+      const text = await file.text();
+      onProg?.(80);
+      const parsed = parseDXF(text);
+      onProg?.(100);
+      return { pages: [], type: "dxf", filename: file.name, ext: "DXF", textContent: parsed };
+    } catch { onProg?.(100); return { pages: [], type: "dxf", filename: file.name, ext: "DXF", textContent: "[помилка читання DXF]" }; }
+  }
+  if (nm.endsWith(".dwg")) {
+    onProg?.(20);
+    try {
+      const parsed = await parseDWGBinary(file);
+      onProg?.(100);
+      return { pages: [], type: "dwg", filename: file.name, ext: "DWG", textContent: parsed, _file: file };
+    } catch {
+      onProg?.(100);
+      return { pages: [], type: "dwg", filename: file.name, ext: "DWG", textContent: "[помилка читання DWG]", _file: file };
+    }
+  }
+  if (nm.endsWith(".xlsx") || nm.endsWith(".xls") || nm.endsWith(".csv")) {
+    onProg?.(30);
+    try {
+      const text = nm.endsWith(".csv") ? await file.text() : await excelToText(file);
+      onProg?.(100);
+      return { pages: [], type: "excel", filename: file.name, ext: nm.endsWith(".csv") ? "CSV" : "XLSX", textContent: text.slice(0, 12000) };
+    } catch { onProg?.(100); return { pages: [], type: "excel", filename: file.name, ext: "XLSX", textContent: "[помилка читання]" }; }
+  }
+  // TXT/MD/text reading
+  if (nm.endsWith(".txt") || nm.endsWith(".md") || nm.endsWith(".rtf")) {
+    onProg?.(30);
+    try {
+      const text = await file.text();
+      onProg?.(100);
+      return { pages: [], type: "text", filename: file.name, ext: nm.split(".").pop().toUpperCase(), textContent: text.slice(0, 12000) };
+    } catch { onProg?.(100); return { pages: [], type: "text", filename: file.name, ext: "TXT", textContent: "[помилка читання]" }; }
+  }
+  // DOCX via mammoth
+  if (nm.endsWith(".docx") || nm.endsWith(".doc")) {
+    onProg?.(20);
+    try {
+      if (!window.mammoth) {
+        await new Promise((res, rej) => {
+          const s = document.createElement("script");
+          s.src = "https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js";
+          s.onload = res; s.onerror = rej; document.head.appendChild(s);
+        });
+      }
+      onProg?.(50);
+      const buf = await file.arrayBuffer();
+      const result = await window.mammoth.extractRawText({ arrayBuffer: buf });
+      onProg?.(100);
+      return { pages: [], type: "text", filename: file.name, ext: "DOCX", textContent: result.value.slice(0, 12000) };
+    } catch { onProg?.(100); return { pages: [], type: "other", filename: file.name, ext: "DOCX", textContent: "[не вдалось прочитати DOCX]" }; }
+  }
+  if (file.type.startsWith("image/")) return imageToB64(file, onProg, sig);
+  onProg?.(100);
+  return { pages: [], type: "other", filename: file.name, ext: file.name.split(".").pop().toUpperCase() };
+}
+
+// ─── File list hook ───────────────────────────────────────────────────────────
+function useFileList() {
+  const ref = useRef([]);
+  const [, setTick] = useState(0);
+  const bump = useCallback(() => setTick(t => t + 1), []);
+  const add = useCallback(async (file) => {
+    const id = "f" + Date.now() + "_" + Math.random().toString(36).slice(2);
+    const ctrl = new AbortController();
+    ref.current = [...ref.current, { _id: id, _loading: true, _progress: 0, _ctrl: ctrl, filename: file.name, preview: null, pages: [], type: null }];
+    bump();
+    try {
+      const d = await processFile(file, pct => { ref.current = ref.current.map(x => x._id === id ? { ...x, _progress: pct } : x); bump(); }, ctrl.signal);
+      ref.current = ref.current.map(x => x._id === id ? { ...d, _id: id, _loading: false, _done: true } : x);
+    } catch (e) {
+      if (e.name === "AbortError") ref.current = ref.current.filter(x => x._id !== id);
+      else ref.current = ref.current.map(x => x._id === id ? { ...x, _loading: false, _error: true } : x);
+    }
+    bump();
+  }, [bump]);
+  const remove = useCallback((idx) => { ref.current = ref.current.filter((_, i) => i !== idx); bump(); }, [bump]);
+  const addDone = useCallback((fileObj) => {
+    const id = "f" + Date.now() + "_" + Math.random().toString(36).slice(2);
+    ref.current = [...ref.current, { ...fileObj, _id: id }];
+    bump();
+  }, [bump]);
+  return { files: ref.current, ref, add, remove, addDone };
+}
+
+let _dragging = null; // { file: processedFileObj, remove: fn }
+
+// ─── API ──────────────────────────────────────────────────────────────────────
+function filesToParts(files, label) {
+  const parts = [];
+  (files || []).forEach((f, fi) => {
+    if ((f.type === "excel" || f.type === "dxf" || f.type === "dwg" || f.type === "text") && f.textContent) {
+      parts.push({ type: "text", text: `${label} ${fi + 1} [${f.ext || "TEXT"}: ${f.filename}]:\n${f.textContent}` });
+    } else {
+      (f.pages || []).filter(p => p.b64).forEach((pg, pi) => {
+        parts.push({ type: "text", text: `${label} ${fi + 1}${pi > 0 ? ` стор.${pi + 1}` : ""}:` });
+        parts.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: pg.b64 } });
+      });
+    }
+  });
+  return parts;
+}
+async function callAPI(parts, retries = 2, apiKey = "") {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true", "x-api-key": apiKey },
+        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 8000, messages: [{ role: "user", content: parts }] })
+      });
+      let data; try { data = await resp.json(); } catch { throw new Error(`HTTP ${resp.status}`); }
+      if (!resp.ok) {
+        if ((resp.status === 502 || resp.status === 503 || resp.status === 529) && attempt < retries) {
+          await new Promise(r => setTimeout(r, 2000 * (attempt + 1))); continue;
+        }
+        throw new Error(`API ${resp.status}: ${data?.error?.message || ""}`);
+      }
+      const raw = (data.content || []).map(b => b.text || "").join("");
+      if (!raw.trim()) throw new Error("Порожня відповідь");
+      const m = raw.match(/```json\s*([\s\S]*?)```/) || raw.match(/```\s*([\s\S]*?)```/) || raw.match(/(\{[\s\S]*\})/);
+      if (!m) throw new Error("JSON не знайдено");
+      try { return JSON.parse(m[1]); } catch {
+        let p = m[1].trim();
+        const op = (p.match(/\{/g) || []).length, cl = (p.match(/\}/g) || []).length;
+        for (let i = 0; i < op - cl; i++) p += "}";
+        return JSON.parse(p);
+      }
+    } catch (e) {
+      if (attempt === retries) throw e;
+      await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+    }
+  }
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const QA_CHECKS = [
+  { id: "Q1.1", label: "Левітація",     color: "#e74c3c" },
+  { id: "Q1.2", label: "Перетин",       color: "#e67e22" },
+  { id: "Q1.3", label: "Текстури",      color: "#9b59b6" },
+  { id: "Q1.4", label: "Зубчатість",    color: "#3498db" },
+  { id: "Q1.5", label: "Артефакти",     color: "#1abc9c" },
+  { id: "Q1.6", label: "Відбиття",      color: "#f39c12" },
+  { id: "Q2.1", label: "Креслення",     color: "#2980b9" },
+  { id: "Q2.2", label: "Мудборд/Бриф",  color: "#8e44ad" },
+  { id: "Q2.3", label: "Моделі",        color: "#16a085" },
+  { id: "Q3.1", label: "Геосеттинг",    color: "#c0392b" },
+  { id: "Q3.2", label: "Написи/Лого",   color: "#d35400" },
+  { id: "Q4.1", label: "Client Req",    color: "#27ae60" },
+];
+const QC = Object.fromEntries(QA_CHECKS.map(q => [q.id, q.color]));
+const STANDARDS = {
+  NON: { color: "#e74c3c", bg: "#fff5f5", desc: "Низький рівень" },
+  MLR: { color: "#e67e22", bg: "#fff9f0", desc: "Середній рівень" },
+  SDC: { color: "#27ae60", bg: "#f0faf4", desc: "Високий стандарт" },
+};
+const STATUS = {
+  fixed:     { label: "Відповідає",    icon: "✅", color: "#27ae60", bg: "#f0faf4" },
+  not_fixed: { label: "Не відповідає", icon: "❌", color: "#e74c3c", bg: "#fff5f5" },
+  partial:   { label: "Частково",      icon: "⚠️", color: "#e67e22", bg: "#fff9f0" },
+};
+const MAT_STATUS = {
+  match:    { label: "Відповідає",      icon: "✅", color: "#27ae60", bg: "#f0faf4" },
+  mismatch: { label: "Невідповідність", icon: "❌", color: "#e74c3c", bg: "#fff5f5" },
+  missing:  { label: "Відсутній",       icon: "🔍", color: "#9b59b6", bg: "#faf5ff" },
+  unknown:  { label: "Не перевірено",   icon: "❓", color: "#aaa",    bg: "#f5f5f5" },
+};
+
+const QA_CHECKLIST_DETAIL = `
+════════════════════════════════════════════════════
+ПОВНИЙ QA ЧЕКЛИСТ — перевір КОЖЕН блок по черзі
+════════════════════════════════════════════════════
+
+── БЛОК 1: ТЕХНІЧНІ ДЕФЕКТИ РЕНДЕРУ ──
+Q1.1 ЛЕВІТАЦІЯ: Чи всі предмети стоять на поверхні? Ніжки меблів, декор, килими, плінтуси. Відсутність контактної тіні = левітація. Стільці, столи, рослини, дрібний декор.
+Q1.2 ПЕРЕТИН ГЕОМЕТРІЇ: Об'єкти крізь стіни, подушки крізь спинку, штори крізь підлогу, предмети крізь стелю. Будь-який кліппінг = баг.
+Q1.3 ТЕКСТУРИ: Тайлінг, стрейчінг, неправильний масштаб, текстура перпендикулярно площині, невідповідні шви між поверхнями.
+Q1.4 ЗУБЧАТІСТЬ/ALIASING: Зубчасті краї на кривих, металевих поручнях, тонких об'єктах. Пікселізація на деталях.
+Q1.5 РЕНДЕР-АРТЕФАКТИ: Fireflies, noise, blotchy shadows, темні плями на стелі/кутах, засвіти без джерела.
+Q1.6 ВІДБИТТЯ/МАТЕРІАЛИ: Відбиття логічні? IOR коректний? Метал/скло/кераміка/тканина — фізично правильні властивості. Roughness відповідає матеріалу?
+
+── БЛОК 2: ВІДПОВІДНІСТЬ КРЕСЛЕННЯМ (DRAWINGS) ──
+Q2.1 Якщо надані креслення — перевір кожен пункт:
+• Elevations: висоти, фасади, пропорції будівлі відповідають?
+• Floorplan: розташування меблів, стін, перегородок по плану?
+• Lighting/electrical plan: розташування світильників, розеток відповідає плану?
+• Лейаут меблів: кожен предмет меблів на своєму місці згідно плану?
+• Вікна/двері/ручки/плінтуси/карнизи: всі деталі присутні та на місці?
+• Матеріали/напрямок текстур: якщо вказано на DWG — відповідає?
+• Розкладка плитки/підлог: паттерн, напрямок, стики відповідають кресленню?
+• Вентканали (підлога/стеля): присутні згідно плану?
+• Водостоки (Gutter): наявні та правильно розташовані?
+• Гребінь/коник даху: наявний та правильної форми?
+• Цегляна кладка/сайдинг: відповідає кресленню?
+• Ландшафтний план: озеленення, доріжки, зони відповідають плану?
+
+── БЛОК 3: МУДБОРД / ДИЗАЙН БРИФ / СПЕЦИФІКАЦІЯ ──
+Q2.2 Перевір відповідність брифу:
+• Коментарі/побажання клієнта: всі специфічні запити виконані?
+• Пора року: рослинність, освітлення, атмосфера відповідають (зима/літо/осінь/весна)?
+• День/ніч: тип освітлення, небо, світло у вікнах відповідає?
+• Кольори/матеріали/стиль: відповідають мудборду та брифу?
+• Відповідність референсам/настрою: загальна атмосфера та настрій?
+• Тип освітлення: природне/штучне/змішане — відповідає запиту?
+
+── БЛОК 4: СПЕЦИФІЧНІ МОДЕЛІ ПО ЗАПИТУ ──
+Q2.3 Якщо клієнт запитував конкретні моделі:
+• Меблі: конкретні бренди/моделі присутні?
+• Рослини: специфічні види рослин присутні?
+• Предмети декору: конкретні декоративні предмети присутні?
+• Інші моделі по запиту клієнта: перевір кожен специфічний запит?
+
+── БЛОК 5: РЕОСЕТТИНГ (ДРІБНІ ДЕТАЛІ РЕАЛІЗМУ) ──
+Q3.1 Перевір КОЖЕН пункт геосеттингу:
+• Розетки: присутні на стінах в логічних місцях?
+• Номери машин: читабельні, не безглузді символи?
+• Рослинність/природа: виглядає природно, не copy-paste клони?
+• Вікна/двері: відчинені/зачинені логічно, ручки присутні?
+• Сантехніка: деталі (кран, змішувач, душ) виглядають реалістично?
+• Штори/жалюзі: природно звисають, складки реалістичні?
+• Дороги/знаки/розмітка/зливи: присутні та відповідають країні проекту?
+• Формат часу на техніці/будівлях/вивісках: коректний (не 88:88)?
+• Написи на магазинах/банерах: правильні, не placeholder текст?
+• Одяг на людях (Middle East): культурно відповідний дрес-код?
+• BEK (Background Environment Kit): фон/оточення логічні та доречні?
+
+── БЛОК 6: НАПИСИ / ЛОГО / НЕЙМИНГ ──
+Q3.2 Перевір всі текстові елементи:
+• Логотипи: правильно відображені, не спотворені?
+• Нейминг об'єктів: правильно написані назви?
+• Шрифти: відповідають брендбуку або запиту?
+• Написи англійською: граматично правильні, без помилок?
+• Написи на вивісках/банерах/магазинах: осмислені, без Lorem Ipsum?
+
+── БЛОК 7: CLIENT CRITICAL REQUIREMENTS ──
+Q4.1 Технічні вимоги клієнта:
+• Розрішення/DPI: відповідає ТЗ (наприклад 300 DPI для друку)?
+• Нейминг файлів: відповідає конвенції імен від клієнта?
+• Співвідношення сторін: коректне (16:9 / 4:3 / 1:1 / custom)?
+• Формат файлів: TIFF/маски/PSD якщо запитано?
+• Унікальні запити клієнта: будь-які інші специфічні вимоги?
+• Studio standards ##ACTQ: відповідність стандартам студії?
+════════════════════════════════════════════════════`;
+
+const QUAL_C = `NON (0-54%): плоске освітлення без тіней, геометричні помилки, тайлінг, шум, відсутність глибини, грубі порушення брифу
+MLR (55-79%): фізично коректні матеріали, природне освітлення, чистий рендер, відповідність основним вимогам ТЗ
+SDC (80-100%): кінематографічна композиція, бездоганна якість, всі деталі геосеттингу на місці, повна відповідність брифу і кресленням`;
+
+const ZONE_PROMPT = `═══ ТОЧНЕ ВИЗНАЧЕННЯ ЗОН — КРИТИЧНО ДЛЯ ЯКОСТІ ПЕРЕВІРКИ ═══
+Система координат: x=0 ліво, y=0 верх, одиниці = відсотки від розміру зображення.
+
+КРОК 1 — Ідентифікація: назви КОНКРЕТНИЙ об'єкт ("ліва передня ніжка дивану", "шов між плиткою та плінтусом праворуч")
+КРОК 2 — Локалізація: визнач де він на зображенні (ліво/право/центр, верх/низ/середина)
+КРОК 3 — Координати: переведи позицію у x,y,w,h відсотки
+
+РОЗМІРИ ЗОН (строго дотримуйся):
+• Точковий дефект (ніжка, стик, піксель): w=3-6, h=3-8
+• Невеликий об'єкт (стілець, ваза, подушка): w=6-14, h=8-18
+• Поверхня/матеріал (ділянка підлоги, стіни): w=12-25, h=10-20
+• Зона освітлення (вікно, пляма світла): w=15-30, h=15-30
+• МАКСИМУМ: w=35, h=35 — тільки якщо дефект охоплює чверть зображення
+
+ПРИКЛАДИ ПРАВИЛЬНИХ ЗОН:
+✅ Левітація ніжки дивана зліва внизу: {"x":8,"y":74,"w":5,"h":7}
+✅ Тайлінг паркету по центру підлоги: {"x":32,"y":62,"w":20,"h":14}
+✅ Firefly у верхньому правому куті стелі: {"x":78,"y":6,"w":4,"h":4}
+✅ Неправильне відбиття у дзеркалі зліва: {"x":4,"y":28,"w":12,"h":22}
+✅ Перетин штори з підлогою: {"x":88,"y":72,"w":8,"h":16}
+
+ЗАБОРОНЕНО (завжди неправильно):
+❌ {"x":0,"y":0,"w":100,"h":100} — вся картинка
+❌ {"x":0,"y":0,"w":50,"h":100} — пів картинки
+❌ Зони без прив'язки до конкретного об'єкту
+
+Пам'ятай: зона має бути такою маленькою, щоб хтось міг одразу знайти проблему поглядом.`;
+
+const BLUEPRINT_COMPARE_PROMPT = `═══ ПОРІВНЯННЯ З КРЕСЛЕННЯМ (Q2.1) ═══
+Якщо надані креслення — обов'язково перевір:
+Elevations (фасади/висоти), Floorplan (розташування меблів/стін), Lighting plan (розташування світильників/розеток), лейаут меблів, вікна/двері/ручки/плінтуси/карнизи, напрямок текстур/матеріалів, розкладка плитки/підлог, вентканали, водостоки (Gutter), гребінь/коник даху, цегла/сайдинг, відповідність ландшафтному плану.
+Для кожної невідповідності — вкажи точну зону на рендері.`;
+
+const JSON_SCHEMA = `{"items":[{"id":"tz1","comment":"Текстура підлоги — паркет дуб","status":"not_fixed","note":"Видно тайлінг патерну","zone":{"x":20,"y":60,"w":18,"h":14}},{"id":"tz2","comment":"Пора року — літо","status":"fixed","note":"Зелена рослинність відповідає","zone":{"x":35,"y":15,"w":22,"h":18}}],"corrections":[{"id":"c1","title":"Виправити тіні під диваном","description":"Відсутні контактні тіні","priority":"high","zone":{"x":18,"y":68,"w":24,"h":8}}],"defects":[{"id":"d1","title":"Левітація ніжки стільця","description":"Передня ліва ніжка не торкається підлоги","severity":"high","qa_tag":"Q1.1","zone":{"x":44,"y":71,"w":4,"h":6}},{"id":"d2","title":"Неправильний напис на банері","description":"Lorem Ipsum замість реального тексту","severity":"medium","qa_tag":"Q3.2","zone":{"x":60,"y":20,"w":18,"h":8}},{"id":"d3","title":"Відсутні розетки","description":"На стінах немає розеток — геосеттинг","severity":"low","qa_tag":"Q3.1","zone":{"x":10,"y":55,"w":5,"h":6}},{"id":"d4","title":"Меблі не на місці по плану","description":"Диван зміщений відносно floorplan","severity":"high","qa_tag":"Q2.1","zone":{"x":25,"y":50,"w":30,"h":25}}],"materials":[{"id":"m1","name":"Паркет дуб натуральний","group":"Підлога","spec":"180×1200мм","status":"match","note":"Відповідає ТЗ","expected":"180x1200 натуральний дуб","zone":{"x":15,"y":65,"w":22,"h":18}}],"quality":{"standard":"MLR","score":65,"summary":"Рендер загалом якісний, але є проблеми з геосеттингом та написами","criteria":[{"name":"Геометрія та фізика","score":55},{"name":"Матеріали та текстури","score":60},{"name":"Відповідність кресленням","score":70},{"name":"Геосеттинг та деталі","score":50},{"name":"Відповідність брифу","score":75}],"upgradeTips":["Додати розетки на стінах","Виправити написи на банерах","Перевірити розташування меблів по floorplan"]},"summary":"MLR рівень, основні проблеми: геосеттинг та написи","globalSummary":""}`;
+
+// ─── Canvas annotations ───────────────────────────────────────────────────────
+function useAnnotatedCanvas(imgRef, anns, visibleIds, hovId) {
+  const canvasRef = useRef();
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current, img = imgRef.current;
+    if (!canvas || !img) return;
+    const rect = img.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    canvas.width = rect.width; canvas.height = rect.height;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    (anns || []).forEach(ann => {
+      if (!ann.zone) return;
+      const key = `${ann._src}:${ann._srcIdx}`;
+      if (visibleIds && !visibleIds.has(key)) return;
+      const { x, y, w, h } = ann.zone;
+      const isHov = hovId === key;
+      let col;
+      if (ann._src === "material") col = MAT_STATUS[ann.status]?.color || "#9b59b6";
+      else col = ann.qa_tag ? (QC[ann.qa_tag] || "#888") : (STATUS[ann.status]?.color || "#888");
+      const cx = x / 100 * canvas.width, cy = y / 100 * canvas.height;
+      const cw = Math.max(w / 100 * canvas.width, 24), ch = Math.max(h / 100 * canvas.height, 18);
+      ctx.save();
+      ctx.fillStyle = col + (isHov ? "28" : "14");
+      ctx.fillRect(cx, cy, cw, ch);
+      ctx.strokeStyle = col; ctx.lineWidth = isHov ? 2.5 : 1.5;
+      ctx.setLineDash(isHov ? [] : [4, 3]);
+      const r2 = 3;
+      ctx.beginPath();
+      ctx.moveTo(cx + r2, cy); ctx.lineTo(cx + cw - r2, cy);
+      ctx.quadraticCurveTo(cx + cw, cy, cx + cw, cy + r2);
+      ctx.lineTo(cx + cw, cy + ch - r2);
+      ctx.quadraticCurveTo(cx + cw, cy + ch, cx + cw - r2, cy + ch);
+      ctx.lineTo(cx + r2, cy + ch);
+      ctx.quadraticCurveTo(cx, cy + ch, cx, cy + ch - r2);
+      ctx.lineTo(cx, cy + r2);
+      ctx.quadraticCurveTo(cx, cy, cx + r2, cy);
+      ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
+      const br = 9, bx = cx + br + 1, by = cy + br + 1;
+      ctx.fillStyle = col; ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
+      if (isHov) { ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(bx, by, br + 2, 0, Math.PI * 2); ctx.stroke(); }
+      ctx.fillStyle = "#fff"; ctx.font = "bold 9px monospace"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(ann._label ?? "-", bx, by);
+      ctx.restore();
+    });
+  }, [anns, visibleIds, hovId]);
+  useEffect(() => {
+    const img = imgRef.current; if (!img) return;
+    const ro = new ResizeObserver(draw); ro.observe(img);
+    return () => ro.disconnect();
+  }, [imgRef, draw]);
+  useEffect(() => { draw(); }, [draw]);
+  return canvasRef;
+}
+
+function AnnotatedImage({ src, anns, visibleIds, hovId }) {
+  const imgRef = useRef();
+  const canvasRef = useAnnotatedCanvas(imgRef, anns, visibleIds, hovId);
+  return (
+    <div style={{ position: "relative", lineHeight: 0 }}>
+      <img ref={imgRef} src={src} alt="" style={{ width: "100%", height: "auto", borderRadius: 8, display: "block", border: "1px solid #2a2a2a" }} />
+      <canvas ref={canvasRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none", borderRadius: 8 }} />
+    </div>
+  );
+}
+
+function BlueprintImg({ src, anns, visibleIds, hovId }) {
+  const imgRef = useRef();
+  const canvasRef = useAnnotatedCanvas(imgRef, anns, visibleIds, hovId);
+  return (
+    <div style={{ position: "relative", lineHeight: 0 }}>
+      <img ref={imgRef} src={src} alt="" style={{ width: "100%", height: "auto", borderRadius: 6, display: "block", border: "1px solid #444" }} />
+      <canvas ref={canvasRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none", borderRadius: 6 }} />
+    </div>
+  );
+}
+
+// ─── CloudConvert DWG→DXF ─────────────────────────────────────────────────────
+async function convertDwgToDxf(dwgFile, apiKey, onProgress) {
+  onProgress("Створення завдання…", 10);
+  // 1. Створюємо job: upload → convert → export
+  const jobResp = await fetch("https://api.cloudconvert.com/v2/jobs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      tasks: {
+        "upload-dwg": { operation: "import/upload" },
+        "convert-to-dxf": { operation: "convert", input: "upload-dwg", input_format: "dwg", output_format: "dxf" },
+        "export-dxf": { operation: "export/url", input: "convert-to-dxf" }
+      }
+    })
+  });
+  if (!jobResp.ok) {
+    const err = await jobResp.json().catch(() => ({}));
+    throw new Error(`CloudConvert: ${err?.message || jobResp.status}`);
+  }
+  const job = await jobResp.json();
+  const uploadTask = job.data.tasks.find(t => t.name === "upload-dwg");
+  if (!uploadTask?.result?.form) throw new Error("Не знайдено форму для завантаження");
+
+  // 2. Завантажуємо DWG файл
+  onProgress("Завантаження файлу…", 30);
+  const form = uploadTask.result.form;
+  const fd = new FormData();
+  Object.entries(form.parameters || {}).forEach(([k, v]) => fd.append(k, v));
+  fd.append("file", dwgFile);
+  const uploadResp = await fetch(form.url, { method: "POST", body: fd });
+  if (!uploadResp.ok) throw new Error(`Помилка завантаження: ${uploadResp.status}`);
+
+  // 3. Чекаємо завершення конвертації
+  onProgress("Конвертація DWG→DXF…", 50);
+  const jobId = job.data.id;
+  let doneJob = null;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    await new Promise(r => setTimeout(r, 2000));
+    const statusResp = await fetch(`https://api.cloudconvert.com/v2/jobs/${jobId}`, {
+      headers: { "Authorization": `Bearer ${apiKey}` }
+    });
+    const statusData = await statusResp.json();
+    if (statusData.data.status === "finished") { doneJob = statusData.data; break; }
+    if (statusData.data.status === "error") throw new Error("CloudConvert: помилка конвертації");
+    onProgress(`Конвертація… (${attempt + 1}/30)`, 50 + attempt);
+  }
+  if (!doneJob) throw new Error("Timeout: конвертація зайняла більше 60 секунд");
+
+  // 4. Скачуємо DXF
+  onProgress("Завантаження результату…", 85);
+  const exportTask = doneJob.tasks.find(t => t.name === "export-dxf");
+  const dxfUrl = exportTask?.result?.files?.[0]?.url;
+  if (!dxfUrl) throw new Error("Не знайдено URL результату");
+
+  const dxfResp = await fetch(dxfUrl);
+  if (!dxfResp.ok) throw new Error(`Помилка скачування DXF: ${dxfResp.status}`);
+  const dxfText = await dxfResp.text();
+
+  onProgress("Читання DXF…", 95);
+  const parsed = parseDXF(dxfText);
+  onProgress("Готово!", 100);
+  return { textContent: parsed, rawDxf: dxfText };
+}
+
+// ─── DWG Upload + Convert Slot ────────────────────────────────────────────────
+function DwgSlot({ files, onAddDwg, onRemove, onConverted }) {
+  const inputRef = useRef();
+  const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem("cc_api_key") || ""; } catch { return ""; } });
+  const [showKey, setShowKey] = useState(false);
+  const [showConverter, setShowConverter] = useState(false);
+  const [drag, setDrag] = useState(false);
+  const ctr = useRef(0);
+  const [converting, setConverting] = useState({});
+  const [ccResults, setCcResults] = useState({});
+  const [errors, setErrors] = useState({});
+
+  const saveKey = k => { setApiKey(k); try { localStorage.setItem("cc_api_key", k); } catch {} };
+
+  const handleFiles = fs => Array.from(fs).forEach(f => {
+    const nm = f.name.toLowerCase();
+    if (nm.endsWith(".dwg") || nm.endsWith(".dxf") || nm.endsWith(".pdf") ||
+        f.type.startsWith("image/")) onAddDwg(f);
+  });
+
+  // CloudConvert — тепер опціональне покращення
+  const convertWithCC = async (f) => {
+    if (!apiKey.trim()) return;
+    const id = f._id;
+    setConverting(p => ({ ...p, [id]: { msg: "Починаємо…", pct: 0 } }));
+    setErrors(p => ({ ...p, [id]: null }));
+    try {
+      const result = await convertDwgToDxf(f._file || f, apiKey.trim(), (msg, pct) => {
+        setConverting(p => ({ ...p, [id]: { msg, pct } }));
+      });
+      setConverting(p => ({ ...p, [id]: null }));
+      setCcResults(p => ({ ...p, [id]: true }));
+      onConverted(f, result.textContent); // замінює DWG→DXF для кращих даних
+    } catch (e) {
+      setConverting(p => ({ ...p, [id]: null }));
+      setErrors(p => ({ ...p, [id]: e.message }));
+    }
+  };
+
+  const dwgFiles = files.filter(f => f.type === "dwg" && !f._loading && !f._error);
+  const hasDwg = dwgFiles.length > 0;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+      <div style={{ fontSize: 10, letterSpacing: "0.14em", color: "#888", marginBottom: 5, fontFamily: "monospace" }}>
+        КРЕСЛЕННЯ
+        <span style={{ fontSize: 8, color: "#555", marginLeft: 8 }}>PDF · DXF · <span style={{ color: "#3498db" }}>DWG (читається автоматично)</span></span>
+      </div>
+
+      {/* Зона завантаження */}
+      <div
+        onDragEnter={e => { e.preventDefault(); ctr.current++; setDrag(true); }}
+        onDragLeave={e => { e.preventDefault(); if (--ctr.current === 0) setDrag(false); }}
+        onDragOver={e => e.preventDefault()}
+        onDrop={e => { e.preventDefault(); setDrag(false); ctr.current = 0; handleFiles(e.dataTransfer.files); }}
+        style={{ border: `2px dashed ${drag ? "#3498db" : "#ddd"}`, borderRadius: hasDwg ? "10px 10px 0 0" : 10, padding: 8, background: drag ? "#3498db11" : "#fafafa", minHeight: 90 }}
+      >
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-start" }}>
+          {files.map((f, i) => {
+            const id = f._id;
+            const conv = converting[id];
+            const isDwg = f.type === "dwg";
+            const isDone = ccResults[id];
+            const hasText = f.textContent && !f.textContent.includes("помилка");
+            const previewLines = hasText ? f.textContent.split("\n").filter(l => l.trim() && !l.startsWith("===")).slice(0, 4) : [];
+            return (
+              <div key={id} style={{ position: "relative", flexShrink: 0 }}>
+                <div style={{
+                  width: 70, height: 70, borderRadius: 5,
+                  border: `2px solid ${isDone ? "#27ae60" : conv ? "#e67e22" : isDwg && hasText ? "#3498db" : "#ddd"}`,
+                  background: isDwg ? (isDone ? "#0a1f0a" : "#0a1929") : "#f0eeea",
+                  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2
+                }}>
+                  {conv ? (
+                    <>
+                      <div style={{ width: 20, height: 20, border: "2px solid #e67e22", borderTop: "2px solid transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+                      <div style={{ fontSize: 7, color: "#e67e22", fontFamily: "monospace" }}>{conv.pct}%</div>
+                    </>
+                  ) : isDone ? (
+                    <>
+                      <div style={{ fontSize: 16 }}>✅</div>
+                      <div style={{ fontSize: 7, color: "#27ae60", fontFamily: "monospace" }}>DXF точний</div>
+                    </>
+                  ) : isDwg && hasText ? (
+                    <>
+                      <div style={{ fontSize: 16 }}>📐</div>
+                      <div style={{ fontSize: 7, color: "#3498db", fontFamily: "monospace" }}>DWG ✓</div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: 16 }}>{ {pdf:"📄", dxf:"📐", image:"🖼️"}[f.type] || "📎" }</div>
+                      <div style={{ fontSize: 7, color: "#888", fontFamily: "monospace" }}>{f.ext || f.type?.toUpperCase()}</div>
+                    </>
+                  )}
+                  {conv && (
+                    <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 3, background: "#111", borderRadius: "0 0 5px 5px", overflow: "hidden" }}>
+                      <div style={{ height: "100%", width: `${conv.pct}%`, background: "#e67e22", transition: "width 0.3s" }} />
+                    </div>
+                  )}
+                </div>
+                {!conv && <button onClick={() => onRemove(i)} style={{ position: "absolute", top: -5, right: -5, width: 16, height: 16, background: "#e74c3c", color: "#fff", border: "none", borderRadius: "50%", cursor: "pointer", fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>}
+                <div style={{ fontSize: 7, color: "#888", fontFamily: "monospace", textAlign: "center", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 70 }}>{f.filename}</div>
+              </div>
+            );
+          })}
+          <div onClick={() => inputRef.current.click()} style={{ width: 70, height: 70, border: "2px dashed #3498db", borderRadius: 8, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
+            <div style={{ fontSize: 20, color: "#3498db" }}>+</div>
+            <div style={{ fontSize: 7, color: "#bbb", fontFamily: "monospace", textAlign: "center" }}>DWG/DXF<br/>PDF/зображ.</div>
+          </div>
+        </div>
+        {!drag && <div style={{ fontSize: 8, color: "#ccc", fontFamily: "monospace", textAlign: "center", marginTop: 4 }}>↑ або перетягніть</div>}
+      </div>
+
+      {/* Превью прочитаних DWG — показується відразу без API */}
+      {dwgFiles.filter(f => f.textContent && !f.textContent.includes("помилка")).map(f => {
+        const lines = f.textContent.split("\n").filter(l => l.trim()).slice(0, 6);
+        const conv = converting[f._id];
+        return (
+          <div key={f._id} style={{ background: "#0a1520", border: "1px solid #3498db33", borderTop: "none", padding: "8px 12px" }}>
+            <div style={{ fontSize: 8, color: "#3498db", fontFamily: "monospace", marginBottom: 4 }}>
+              📐 {f.filename} — прочитано (без API):
+            </div>
+            {lines.map((l, i) => <div key={i} style={{ fontSize: 8, color: "#556", fontFamily: "monospace", lineHeight: 1.5 }}>{l}</div>)}
+            {!ccResults[f._id] && !conv && (
+              <button onClick={() => setShowConverter(s => !s)} style={{ marginTop: 6, background: "transparent", border: "1px solid #3498db44", color: "#3498db", borderRadius: 4, padding: "3px 8px", cursor: "pointer", fontSize: 8, fontFamily: "monospace" }}>
+                {showConverter ? "▲ сховати" : "⚡ покращити точність через CloudConvert DXF →"}
+              </button>
+            )}
+            {ccResults[f._id] && <div style={{ fontSize: 8, color: "#27ae60", fontFamily: "monospace", marginTop: 4 }}>✅ Замінено точним DXF</div>}
+          </div>
+        );
+      })}
+
+      {/* CloudConvert — опціональне покращення */}
+      {hasDwg && showConverter && (
+        <div style={{ background: "#0f1923", border: "1px solid #e67e2233", borderTop: "none", borderRadius: "0 0 8px 8px", padding: "10px 12px", display: "flex", flexDirection: "column", gap: 7 }}>
+          <div style={{ fontSize: 9, color: "#e67e22", fontFamily: "monospace", fontWeight: 700 }}>⚡ CloudConvert — точніший DXF (опціонально)</div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input
+              type={showKey ? "text" : "password"}
+              value={apiKey}
+              onChange={e => saveKey(e.target.value)}
+              placeholder="API ключ з cloudconvert.com"
+              style={{ flex: 1, background: "#1a2332", border: "1px solid #334", borderRadius: 5, padding: "5px 8px", color: "#ddd", fontFamily: "monospace", fontSize: 10, outline: "none" }}
+            />
+            <button onClick={() => setShowKey(s => !s)} style={{ background: "#1a2332", border: "1px solid #334", color: "#666", borderRadius: 4, padding: "5px 7px", cursor: "pointer", fontSize: 9 }}>
+              {showKey ? "🙈" : "👁"}
+            </button>
+          </div>
+          <div style={{ fontSize: 8, color: "#555", fontFamily: "monospace", lineHeight: 1.6 }}>
+            <a href="https://cloudconvert.com/register" target="_blank" style={{ color: "#3498db" }}>cloudconvert.com</a> → API Keys → Create (tasks.read + tasks.write) — 25 безкоштовних/день
+          </div>
+          {dwgFiles.map(f => (
+            <div key={f._id} style={{ display: "flex", alignItems: "center", gap: 8, background: "#1a2332", borderRadius: 5, padding: "6px 10px" }}>
+              <span style={{ flex: 1, fontSize: 9, color: "#aaa", fontFamily: "monospace" }}>{f.filename}</span>
+              {ccResults[f._id]
+                ? <span style={{ fontSize: 9, color: "#27ae60", fontFamily: "monospace" }}>✅ готово</span>
+                : converting[f._id]
+                  ? <span style={{ fontSize: 8, color: "#e67e22", fontFamily: "monospace" }}>{converting[f._id]?.msg} {converting[f._id]?.pct}%</span>
+                  : <button onClick={() => convertWithCC(f)} disabled={!apiKey.trim()} style={{ background: apiKey.trim() ? "#e67e22" : "#333", border: "none", color: "#fff", borderRadius: 4, padding: "4px 10px", cursor: apiKey.trim() ? "pointer" : "not-allowed", fontSize: 9, fontFamily: "monospace" }}>
+                      Конвертувати →
+                    </button>
+              }
+              {errors[f._id] && <span style={{ fontSize: 8, color: "#e74c3c", fontFamily: "monospace" }}>{errors[f._id]}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <input ref={inputRef} type="file" accept=".dwg,.dxf,.pdf,.png,.jpg,.jpeg,.webp" multiple style={{ display: "none" }} onChange={e => { handleFiles(e.target.files); e.target.value = ""; }} />
+    </div>
+  );
+}
+
+
+function BlueprintPanel({ drawings, anns, visibleIds, hovId }) {
+  const [di, setDi] = useState(0);
+  const [pi, setPi] = useState(0);
+  const ready = (drawings || []).filter(d => !d._loading && !d._error && d.type !== "excel" && d.type !== "dwg" && d.type !== "dxf" && (d.pages || []).some(p => p.preview));
+  const dwgOnly = (drawings || []).filter(d => !d._loading && !d._error && d.type === "dwg");
+  const dxfOnly = (drawings || []).filter(d => !d._loading && !d._error && d.type === "dxf");
+  if (!ready.length && !dwgOnly.length && !dxfOnly.length) return <div style={{ height: 80, display: "flex", alignItems: "center", justifyContent: "center", background: "#0d1117", borderRadius: 8, color: "#555", fontFamily: "monospace", fontSize: 10 }}>Креслення не завантажені</div>;
+  if (!ready.length) return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {dxfOnly.length > 0 && (
+        <div style={{ background: "#0d2b0d", border: "1px solid #27ae6033", borderRadius: 8, padding: "10px 14px" }}>
+          <div style={{ fontSize: 10, color: "#27ae60", fontFamily: "monospace", marginBottom: 4 }}>📐 DXF зчитано — дані передані до Claude:</div>
+          {dxfOnly.map((d, i) => <div key={i} style={{ fontSize: 9, color: "#888", fontFamily: "monospace" }}>✓ {d.filename}</div>)}
+        </div>
+      )}
+      {dwgOnly.length > 0 && (
+        <div style={{ background: "#1a1208", border: "1px solid #e67e2233", borderRadius: 8, padding: "10px 14px" }}>
+          <div style={{ fontSize: 10, color: "#e67e22", fontFamily: "monospace", marginBottom: 6 }}>⚠️ DWG — бінарний формат, не читається напряму</div>
+          <div style={{ fontSize: 9, color: "#888", fontFamily: "monospace", lineHeight: 1.6 }}>
+            Варіанти конвертації у DXF або PDF:<br/>
+            • <a href="https://www.zamzar.com/convert/dwg-to-pdf/" target="_blank" style={{ color: "#3498db" }}>zamzar.com</a> — DWG→PDF безкоштовно<br/>
+            • <a href="https://cloudconvert.com/dwg-to-dxf" target="_blank" style={{ color: "#3498db" }}>cloudconvert.com</a> — DWG→DXF (текст читається)<br/>
+            • AutoCAD: File → Export → PDF або Save As DXF
+          </div>
+        </div>
+      )}
+    </div>
+  );
+  const cur = ready[di]; const dPages = cur?.pages || []; const dPrev = dPages[pi]?.preview;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {dxfOnly.length > 0 && <div style={{ fontSize: 9, color: "#27ae60", fontFamily: "monospace", background: "#0d2b0d", padding: "4px 8px", borderRadius: 4 }}>📐 DXF дані також передані Claude: {dxfOnly.map(d => d.filename).join(", ")}</div>}
+      {ready.length > 1 && <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>{ready.map((d, i) => <button key={i} onClick={() => { setDi(i); setPi(0); }} style={{ fontSize: 9, fontFamily: "monospace", padding: "3px 9px", borderRadius: 4, border: "none", cursor: "pointer", background: di === i ? "#fff" : "#333", color: di === i ? "#111" : "#aaa" }}>{d.filename || `Крес.${i + 1}`}</button>)}</div>}
+      {dPages.length > 1 && <div style={{ display: "flex", gap: 4 }}>{dPages.map((_, i) => <button key={i} onClick={() => setPi(i)} style={{ fontSize: 9, fontFamily: "monospace", padding: "2px 7px", borderRadius: 4, border: "none", cursor: "pointer", background: pi === i ? "#fff" : "#333", color: pi === i ? "#111" : "#aaa" }}>Стор.{i + 1}</button>)}</div>}
+      {dPrev
+        ? <BlueprintImg src={dPrev} anns={anns} visibleIds={visibleIds} hovId={hovId} />
+        : <div style={{ height: 100, background: "#1a1a1a", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", color: "#555", fontFamily: "monospace", fontSize: 10 }}>немає превью</div>
+      }
+    </div>
+  );
+}
+
+// ─── Annotation list ──────────────────────────────────────────────────────────
+function AnnList({ anns, visibleIds, onToggle, onToggleGroup, onHover, groupFilter, onGroupFilter }) {
+  const groups = {};
+  anns.forEach(a => {
+    const g = a._src === "material" ? "🎨 Матеріали"
+      : a.qa_tag ? `#${a.qa_tag} — ${QA_CHECKS.find(q => q.id === a.qa_tag)?.label || a.qa_tag}`
+      : a._src === "item" ? "📋 ТЗ"
+      : a._src === "corr" ? "✏️ Правки"
+      : "⚠️ Дефекти";
+    if (!groups[g]) groups[g] = [];
+    groups[g].push(a);
+  });
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingBottom: 8, borderBottom: "1px solid #f0eeea" }}>
+        <button onClick={() => onToggle("all", true)} style={{ fontSize: 9, fontFamily: "monospace", padding: "3px 9px", borderRadius: 4, background: "#e8f5e9", border: "1px solid #27ae6033", cursor: "pointer", color: "#27ae60" }}>Всі ✓</button>
+        <button onClick={() => onToggle("all", false)} style={{ fontSize: 9, fontFamily: "monospace", padding: "3px 9px", borderRadius: 4, background: "#fff5f5", border: "1px solid #e74c3c33", cursor: "pointer", color: "#e74c3c" }}>Всі ✗</button>
+        <button onClick={() => onGroupFilter(null)} style={{ fontSize: 9, fontFamily: "monospace", padding: "3px 9px", borderRadius: 4, background: !groupFilter ? "#1a1a1a" : "#eee", border: "none", cursor: "pointer", color: !groupFilter ? "#fff" : "#555" }}>Показати всі</button>
+      </div>
+      {Object.entries(groups).map(([gname, items]) => {
+        const col = items[0]?.qa_tag ? (QC[items[0].qa_tag] || "#888")
+          : items[0]?._src === "material" ? "#9b59b6"
+          : items[0]?._src === "item" ? "#3498db"
+          : items[0]?._src === "corr" ? "#e67e22"
+          : "#e74c3c";
+        const allVis = items.every(a => visibleIds.has(`${a._src}:${a._srcIdx}`));
+        const someVis = items.some(a => visibleIds.has(`${a._src}:${a._srcIdx}`));
+        const isFiltered = groupFilter === gname;
+        return (
+          <div key={gname} style={{ border: `1px solid ${col}22`, borderRadius: 8, overflow: "hidden" }}>
+            <div style={{ background: col + "14", padding: "6px 10px", display: "flex", alignItems: "center", gap: 7 }}>
+              <button onClick={() => onToggleGroup(items, !allVis)} style={{ width: 18, height: 18, borderRadius: 3, border: `1.5px solid ${col}`, background: allVis ? col : "transparent", cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                {allVis && <span style={{ color: "#fff", fontSize: 9, lineHeight: 1 }}>✓</span>}
+                {!allVis && someVis && <span style={{ background: col, width: 8, height: 8, borderRadius: 1, display: "block" }} />}
+              </button>
+              <span style={{ fontSize: 10, fontWeight: 700, color: col, fontFamily: "monospace", flex: 1 }}>{gname}</span>
+              <span style={{ fontSize: 9, background: col, color: "#fff", borderRadius: 10, padding: "0 5px", fontFamily: "monospace" }}>{items.length}</span>
+              <button onClick={() => onGroupFilter(isFiltered ? null : gname)} style={{ fontSize: 8, background: isFiltered ? col : "transparent", border: `1px solid ${col}`, color: isFiltered ? "#fff" : col, padding: "2px 7px", borderRadius: 10, cursor: "pointer", fontFamily: "monospace" }}>
+                {isFiltered ? "скасувати" : "фільтр"}
+              </button>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              {items.map(a => {
+                const key = `${a._src}:${a._srcIdx}`;
+                const vis = visibleIds.has(key);
+                const sc = a._src === "material" ? MAT_STATUS[a.status] : STATUS[a.status];
+                const iCol = a.qa_tag ? (QC[a.qa_tag] || col) : a._src === "material" ? (MAT_STATUS[a.status]?.color || col) : (STATUS[a.status]?.color || col);
+                return (
+                  <div key={key} onMouseEnter={() => onHover(key)} onMouseLeave={() => onHover(null)}
+                    style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "7px 10px", background: "#fff", borderBottom: "1px solid #f5f3ef", opacity: vis ? 1 : 0.38, transition: "opacity 0.15s" }}>
+                    <button onClick={() => onToggle(key, !vis)} style={{ width: 16, height: 16, borderRadius: 3, border: `1.5px solid ${iCol}`, background: vis ? iCol : "transparent", cursor: "pointer", flexShrink: 0, marginTop: 2, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {vis && <span style={{ color: "#fff", fontSize: 8, lineHeight: 1 }}>✓</span>}
+                    </button>
+                    <div style={{ width: 18, height: 18, background: iCol, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8, color: "#fff", fontFamily: "monospace", fontWeight: "bold", flexShrink: 0, marginTop: 1 }}>{a._label}</div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: "#333", fontFamily: "monospace" }}>{a.comment || a.title || a.name}</span>
+                        {sc && <span style={{ fontSize: 8, background: sc.bg || "#f5f5f5", color: sc.color || "#888", padding: "1px 5px", borderRadius: 3, fontFamily: "monospace" }}>{sc.icon} {sc.label}</span>}
+                        {a.zone && <span style={{ fontSize: 8, color: "#3498db", fontFamily: "monospace" }}>📍</span>}
+                      </div>
+                      {(a.note || a.description) && <div style={{ fontSize: 10, color: "#777", fontFamily: "monospace", marginTop: 1, lineHeight: 1.45 }}>{a.note || a.description}</div>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Verdict banner (горизонтальна смуга над зображенням) ─────────────────────
+function VerdictBanner({ quality, summary }) {
+  if (!quality) return null;
+  const key = quality.standard && quality.standard.startsWith("SDC") ? "SDC"
+    : quality.standard && quality.standard.startsWith("MLR") ? "MLR" : "NON";
+  const cfg = STANDARDS[key];
+  const score = quality.score || 0;
+  const sc = score >= 80 ? "#27ae60" : score >= 55 ? "#e67e22" : "#e74c3c";
+  const nextKey = key === "NON" ? "MLR" : key === "MLR" ? "SDC" : null;
+  const tips = (quality.upgradeTips || []).filter(t => t);
+  return (
+    <div style={{ background: "#fff", border: `1.5px solid ${cfg.color}55`, borderRadius: 10, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "stretch" }}>
+        <div style={{ background: cfg.color, padding: "12px 20px", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", minWidth: 90, flexShrink: 0 }}>
+          <div style={{ fontSize: 8, color: "rgba(255,255,255,0.65)", fontFamily: "monospace", letterSpacing: "0.12em", marginBottom: 2 }}>ВИСНОВОК QA</div>
+          <div style={{ fontSize: 26, fontWeight: 700, color: "#fff", fontFamily: "monospace", lineHeight: 1 }}>{quality.standard || key}</div>
+          <div style={{ fontSize: 9, color: "rgba(255,255,255,0.75)", fontFamily: "monospace", marginTop: 2 }}>{cfg.desc}</div>
+        </div>
+        <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", borderRight: "1px solid #f0eeea", minWidth: 80, flexShrink: 0 }}>
+          <div style={{ fontSize: 32, fontWeight: 700, color: sc, lineHeight: 1, fontFamily: "monospace" }}>{score}%</div>
+          <div style={{ fontSize: 8, color: "#aaa", fontFamily: "monospace", marginTop: 2 }}>ГОТОВНІСТЬ</div>
+          <div style={{ width: 60, height: 5, background: "#e0ddd8", borderRadius: 3, overflow: "hidden", marginTop: 6 }}>
+            <div style={{ height: "100%", width: `${score}%`, background: sc, borderRadius: 3, transition: "width 0.8s" }} />
+          </div>
+        </div>
+        <div style={{ flex: 1, padding: "12px 14px", display: "flex", flexDirection: "column", justifyContent: "center", gap: 5, borderRight: (nextKey && tips.length > 0) ? "1px solid #f0eeea" : "none" }}>
+          {(quality.criteria || []).map((c, i) => {
+            const csc = c.score >= 80 ? "#27ae60" : c.score >= 55 ? "#e67e22" : "#e74c3c";
+            return (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ fontSize: 9, fontFamily: "monospace", color: "#666", width: 110, flexShrink: 0 }}>{c.name}</div>
+                <div style={{ flex: 1, height: 4, background: "#e8e6e1", borderRadius: 2, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${c.score}%`, background: csc, borderRadius: 2 }} />
+                </div>
+                <div style={{ fontSize: 9, fontFamily: "monospace", color: "#888", width: 26, textAlign: "right" }}>{c.score}%</div>
+              </div>
+            );
+          })}
+        </div>
+        {nextKey && tips.length > 0 && (
+          <div style={{ padding: "12px 14px", display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 180, maxWidth: 260, background: STANDARDS[nextKey].bg }}>
+            <div style={{ fontSize: 9, fontWeight: 700, color: STANDARDS[nextKey].color, fontFamily: "monospace", marginBottom: 5 }}>ДО {nextKey} ↑</div>
+            {tips.map((t, i) => (
+              <div key={i} style={{ fontSize: 9, color: "#555", fontFamily: "monospace", lineHeight: 1.55 }}>· {t}</div>
+            ))}
+          </div>
+        )}
+      </div>
+      {summary && (
+        <div style={{ borderTop: `1px solid ${cfg.color}22`, background: cfg.bg, padding: "9px 18px", fontSize: 11, color: "#444", fontFamily: "monospace", lineHeight: 1.65 }}>
+          {summary}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Verdict (права панель — скорочена версія) ────────────────────────────────
+function Verdict({ quality }) {
+  if (!quality) return <div style={{ textAlign: "center", padding: 20, color: "#bbb", fontFamily: "monospace", fontSize: 11 }}>Висновок відсутній</div>;
+  const key = quality.standard && quality.standard.startsWith("SDC") ? "SDC"
+    : quality.standard && quality.standard.startsWith("MLR") ? "MLR" : "NON";
+  const cfg = STANDARDS[key];
+  const score = quality.score || 0;
+  const sc = score >= 80 ? "#27ae60" : score >= 55 ? "#e67e22" : "#e74c3c";
+  const nextKey = key === "NON" ? "MLR" : key === "MLR" ? "SDC" : null;
+  return (
+    <div style={{ background: cfg.bg, border: `2px solid ${cfg.color}44`, borderRadius: 12, overflow: "hidden" }}>
+      <div style={{ background: cfg.color, padding: "10px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <div style={{ fontSize: 9, color: "rgba(255,255,255,0.7)", fontFamily: "monospace", letterSpacing: "0.1em" }}>ВИСНОВОК QA</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: "#fff", fontFamily: "monospace" }}>{quality.standard || key}</div>
+          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.8)", fontFamily: "monospace" }}>{cfg.desc}</div>
+        </div>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 36, fontWeight: 700, color: "#fff", lineHeight: 1 }}>{score}%</div>
+          <div style={{ fontSize: 9, color: "rgba(255,255,255,0.7)", fontFamily: "monospace" }}>ГОТОВНІСТЬ</div>
+        </div>
+      </div>
+      <div style={{ padding: "12px 16px" }}>
+        <div style={{ height: 7, background: "#e0ddd8", borderRadius: 4, overflow: "hidden", marginBottom: 10 }}>
+          <div style={{ height: "100%", width: `${score}%`, background: sc, borderRadius: 4, transition: "width 0.8s" }} />
+        </div>
+        {(quality.criteria || []).map((c, i) => {
+          const csc = c.score >= 80 ? "#27ae60" : c.score >= 55 ? "#e67e22" : "#e74c3c";
+          return (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+              <div style={{ fontSize: 10, fontFamily: "monospace", color: "#555", width: 130, flexShrink: 0 }}>{c.name}</div>
+              <div style={{ flex: 1, height: 4, background: "#e0ddd8", borderRadius: 2, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${c.score}%`, background: csc, borderRadius: 2 }} />
+              </div>
+              <div style={{ fontSize: 10, fontFamily: "monospace", color: "#666", width: 28, textAlign: "right" }}>{c.score}%</div>
+            </div>
+          );
+        })}
+        {quality.summary && <div style={{ fontSize: 11, color: "#444", lineHeight: 1.65, fontFamily: "monospace", background: "rgba(255,255,255,0.6)", borderRadius: 6, padding: "8px 10px", marginTop: 8 }}>{quality.summary}</div>}
+        {nextKey && (quality.upgradeTips || []).length > 0 && (
+          <div style={{ marginTop: 10, background: STANDARDS[nextKey].bg, borderLeft: `4px solid ${STANDARDS[nextKey].color}`, padding: "8px 12px", borderRadius: "0 6px 6px 0" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: STANDARDS[nextKey].color, fontFamily: "monospace", marginBottom: 4 }}>ДО {nextKey} ↑</div>
+            {quality.upgradeTips.map((t, i) => <div key={i} style={{ fontSize: 11, color: "#444", fontFamily: "monospace", marginBottom: 2 }}>· {t}</div>)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Tab bar component ────────────────────────────────────────────────────────
+function TabBar({ tabs, active, onSelect }) {
+  return (
+    <div style={{ borderBottom: "1px solid #e8e6e1", padding: "0 14px", display: "flex", flexWrap: "wrap", gap: 0, alignItems: "flex-end", background: "#fff" }}>
+      {tabs.map(t => (
+        <button key={t.id} onClick={() => onSelect(t.id)} style={{
+          background: "none", border: "none", padding: "10px 12px 9px",
+          fontSize: 13, fontFamily: "Georgia, serif", cursor: "pointer",
+          color: active === t.id ? "#1a1a1a" : "#aaa",
+          fontWeight: active === t.id ? 600 : 400,
+          borderBottom: active === t.id ? "2px solid #1a1a1a" : "2px solid transparent",
+          marginBottom: -1, whiteSpace: "nowrap",
+        }}>{t.label}</button>
+      ))}
+    </div>
+  );
+}
+
+// ─── Detail page ──────────────────────────────────────────────────────────────
+function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, status, apiError, onBack, mode, onReview }) {
+  const [selR, setSelR] = useState(0);
+  const [hovId, setHovId] = useState(null);
+  const [visibleIds, setVisibleIds] = useState(null);
+  const [groupFilter, setGroupFilter] = useState(null);
+  const [irrelevant, setIrrelevant] = useState(new Set()); // "item:0", "corr:1", "defect:2"
+  const [reviewing, setReviewing] = useState(false);
+
+  const items = data?.items || [];
+  const corr = data?.corrections || [];
+  const defects = data?.defects || [];
+  const materials = data?.materials || [];
+  const quality = data?.quality;
+  const isRev = mode === "revision";
+
+  const [tab, setTab] = useState(() => items.length > 0 ? "tz" : "overview");
+
+  const toggleIrrelevant = (key) => {
+    setIrrelevant(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const handleReview = async () => {
+    if (!onReview || irrelevant.size === 0) return;
+    setReviewing(true);
+    const excluded = [];
+    irrelevant.forEach(key => {
+      const [src, idx] = key.split(":");
+      const i = parseInt(idx);
+      if (src === "item") excluded.push({ type: "ТЗ", text: items[i]?.comment });
+      if (src === "corr") excluded.push({ type: "Правка", text: corr[i]?.title });
+      if (src === "defect") excluded.push({ type: "Дефект", text: defects[i]?.title });
+    });
+    await onReview(excluded);
+    setIrrelevant(new Set());
+    setReviewing(false);
+  };
+
+  const allAnns = [
+    ...items.map((x, i) => ({ ...x, _src: "item", _srcIdx: i, _label: i + 1 })),
+    ...corr.map((x, i) => ({ ...x, comment: x.title, status: "partial", _src: "corr", _srcIdx: i, _label: i + 1 })),
+    ...defects.map((x, i) => ({ ...x, comment: x.title, status: x.severity === "high" ? "not_fixed" : "partial", _src: "defect", _srcIdx: i, _label: i + 1 })),
+    ...materials.filter(m => m.zone).map((m, i) => ({ ...m, comment: m.name, _src: "material", _srcIdx: i, _label: i + 1 })),
+  ];
+
+  useEffect(() => {
+    if (!data || visibleIds !== null) return;
+    setVisibleIds(new Set(allAnns.map(a => `${a._src}:${a._srcIdx}`)));
+  }, [data]); // eslint-disable-line
+
+  const effVisible = visibleIds || new Set(allAnns.map(a => `${a._src}:${a._srcIdx}`));
+
+  const filteredAnns = groupFilter
+    ? allAnns.filter(a => {
+        if (groupFilter === "🎨 Матеріали") return a._src === "material";
+        if (groupFilter.startsWith("#")) return a.qa_tag && groupFilter.includes(a.qa_tag);
+        if (groupFilter === "📋 ТЗ") return a._src === "item";
+        if (groupFilter === "✏️ Правки") return a._src === "corr";
+        if (groupFilter === "⚠️ Дефекти") return a._src === "defect";
+        return true;
+      })
+    : allAnns;
+
+  const handleToggle = (keyOrAll, vis) => {
+    setVisibleIds(prev => {
+      const s = new Set(prev || allAnns.map(a => `${a._src}:${a._srcIdx}`));
+      if (keyOrAll === "all") {
+        if (vis) allAnns.forEach(a => s.add(`${a._src}:${a._srcIdx}`));
+        else allAnns.forEach(a => s.delete(`${a._src}:${a._srcIdx}`));
+      } else {
+        if (vis) s.add(keyOrAll); else s.delete(keyOrAll);
+      }
+      return s;
+    });
+  };
+  const handleToggleGroup = (groupAnns, vis) => {
+    setVisibleIds(prev => {
+      const s = new Set(prev || allAnns.map(a => `${a._src}:${a._srcIdx}`));
+      groupAnns.forEach(a => { const k = `${a._src}:${a._srcIdx}`; if (vis) s.add(k); else s.delete(k); });
+      return s;
+    });
+  };
+
+  const activeR = renderFiles?.[selR];
+  const activePrev = activeR?.preview || activeR?.pages?.[0]?.preview;
+  const beforePrev = beforeFiles?.[0]?.preview || beforeFiles?.[0]?.pages?.[0]?.preview;
+  const stdKey = quality?.standard?.startsWith("SDC") ? "SDC" : quality?.standard?.startsWith("MLR") ? "MLR" : "NON";
+  const stdCfg = STANDARDS[stdKey];
+  const readyDrawings = (drawings || []).filter(d => !d._loading && !d._error && d.type !== "excel");
+  const mismatches = materials.filter(m => m.status === "mismatch" || m.status === "missing").length;
+  const tzOk = items.filter(x => x.status === "fixed").length;
+  const tzFail = items.filter(x => x.status === "not_fixed").length;
+  const critCount = defects.filter(d => d.severity === "high").length;
+
+  const tabs1 = [
+    { id: "overview", label: "Заключення" },
+    items.length > 0 && { id: "tz", label: `ТЗ (${items.length})` },
+    corr.length > 0 && { id: "corr", label: `Правки (${corr.length})` },
+    defects.length > 0 && { id: "defects", label: `Дефекти (${defects.length})` },
+    materials.length > 0 && { id: "materials", label: `Матеріали (${materials.length})` },
+  ].filter(Boolean);
+  const drawingCount = readyDrawings.length + (drawings || []).filter(d => d.type === "dxf" || d.type === "dwg").length;
+  const hasDrawTab = drawingCount > 0;
+
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#f2f0ec" }}>
+      <div style={{ background: "#111", color: "#f2f0ec", padding: "10px 18px", display: "flex", alignItems: "center", gap: 12, position: "sticky", top: 0, zIndex: 40, borderBottom: "1px solid #222" }}>
+        <button onClick={onBack} style={{ background: "transparent", border: "1px solid #444", color: "#aaa", padding: "4px 11px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 4 }}>← {isRev ? "Раунди" : "Ракурси"}</button>
+        <span style={{ fontSize: 11, fontFamily: "monospace", color: "#666" }}>{isRev ? "РАУНД" : "РАКУРС"} {num}{total > 1 ? ` / ${total}` : ""}</span>
+        <span style={{ flex: 1 }} />
+        {data && !status && (
+          <span style={{ display: "flex", gap: 6 }}>
+            {tzFail > 0 && <span style={{ fontSize: 10, background: "#e74c3c", color: "#fff", padding: "3px 9px", borderRadius: 10, fontFamily: "monospace" }}>❌ {tzFail} ТЗ</span>}
+            {critCount > 0 && <span style={{ fontSize: 10, background: "#e67e22", color: "#fff", padding: "3px 9px", borderRadius: 10, fontFamily: "monospace" }}>🔴 {critCount} крит</span>}
+            {mismatches > 0 && <span style={{ fontSize: 10, background: "#9b59b6", color: "#fff", padding: "3px 9px", borderRadius: 10, fontFamily: "monospace" }}>🎨 {mismatches} мат</span>}
+          </span>
+        )}
+        {quality && !status && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: stdCfg.color, background: stdCfg.color + "22", border: `1px solid ${stdCfg.color}44`, padding: "3px 12px", borderRadius: 6, fontFamily: "monospace" }}>{quality.standard}</span>
+            <span style={{ fontSize: 13, color: quality.score >= 80 ? "#27ae60" : quality.score >= 55 ? "#e67e22" : "#e74c3c", fontFamily: "monospace", fontWeight: 700 }}>{quality.score}%</span>
+          </div>
+        )}
+        {status && <div style={{ display: "flex", alignItems: "center", gap: 6 }}><div style={{ width: 10, height: 10, border: "1.5px solid #555", borderTop: "1.5px solid #fff", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} /><span style={{ fontSize: 10, color: "#aaa", fontFamily: "monospace" }}>{status}</span></div>}
+      </div>
+
+      <div style={{ maxWidth: 1500, margin: "0 auto", padding: "12px" }}>
+        {apiError && (
+          <div style={{ background: "#fff5f5", border: "2px solid #e74c3c", borderRadius: 10, padding: 14, marginBottom: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#e74c3c", fontFamily: "monospace" }}>❌ ПОМИЛКА API</div>
+            <div style={{ fontSize: 11, color: "#555", fontFamily: "monospace", marginTop: 4, wordBreak: "break-all" }}>{apiError}</div>
+          </div>
+        )}
+        {status && (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, padding: "80px 0" }}>
+            <div style={{ width: 28, height: 28, border: "2px solid #eee", borderTop: "2px solid #1a1a1a", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
+            <span style={{ fontSize: 12, color: "#888", fontFamily: "monospace" }}>Аналізую {isRev ? "раунд" : "ракурс"} {num}…</span>
+          </div>
+        )}
+
+        {!status && data && !apiError && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <VerdictBanner quality={quality} summary={data.summary} />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 12, alignItems: "start" }}>
+              {/* LEFT: render image */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {(renderFiles || []).length > 1 && (
+                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                    {renderFiles.map((f, i) => {
+                      const p = f.preview || f.pages?.[0]?.preview;
+                      return (
+                        <div key={i} onClick={() => setSelR(i)} style={{ width: 52, height: 36, borderRadius: 4, overflow: "hidden", cursor: "pointer", border: `2px solid ${selR === i ? "#27ae60" : "#333"}`, flexShrink: 0 }}>
+                          {p && <img src={p} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                <div style={{ background: "#111", borderRadius: 10, padding: 8 }}>
+                  <div style={{ fontSize: 9, color: "#27ae60", fontFamily: "monospace", marginBottom: 6, letterSpacing: "0.1em" }}>
+                    РАКУРС {num}{total > 1 ? ` з ${total}` : ""} — {filteredAnns.filter(a => a.zone && effVisible.has(`${a._src}:${a._srcIdx}`)).length} відміток
+                  </div>
+                  {activePrev
+                    ? <AnnotatedImage src={activePrev} anns={filteredAnns} visibleIds={effVisible} hovId={hovId} />
+                    : <div style={{ height: 260, display: "flex", alignItems: "center", justifyContent: "center", color: "#555", fontFamily: "monospace" }}>немає превью</div>
+                  }
+                </div>
+                {isRev && beforePrev && (
+                  <div style={{ background: "#111", borderRadius: 10, padding: 8 }}>
+                    <div style={{ fontSize: 9, color: "#888", fontFamily: "monospace", marginBottom: 6, letterSpacing: "0.1em" }}>ВЕРСІЯ ДО</div>
+                    <img src={beforePrev} style={{ width: "100%", borderRadius: 6, border: "1px solid #444", opacity: 0.85 }} />
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", paddingLeft: 2 }}>
+                  {Object.entries(STATUS).map(([k, v]) => (
+                    <div key={k} style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                      <div style={{ width: 6, height: 6, background: v.color, borderRadius: "50%" }} />
+                      <span style={{ fontSize: 9, color: "#888", fontFamily: "monospace" }}>{v.label}</span>
+                    </div>
+                  ))}
+                  <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                    <div style={{ width: 6, height: 6, background: "#9b59b6", borderRadius: "50%" }} />
+                    <span style={{ fontSize: 9, color: "#888", fontFamily: "monospace" }}>Матеріал</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* RIGHT: new tabs panel */}
+              <div style={{ background: "#fff", borderRadius: 10, overflow: "hidden", boxShadow: "0 1px 4px rgba(0,0,0,0.07)" }}>
+                {/* Row 1 tabs */}
+                <TabBar tabs={tabs1} active={tab} onSelect={t => setTab(t)} />
+                {/* Row 2: Креслення tab if drawings exist */}
+                {hasDrawTab && (
+                  <div style={{ borderBottom: "1px solid #f0eeea", padding: "0 14px", background: "#fafaf9", display: "flex", alignItems: "flex-end" }}>
+                    <button onClick={() => setTab("drawings")} style={{
+                      background: "none", border: "none", padding: "7px 12px 6px",
+                      fontSize: 13, fontFamily: "Georgia, serif", cursor: "pointer",
+                      color: tab === "drawings" ? "#1a1a1a" : "#aaa",
+                      fontWeight: tab === "drawings" ? 600 : 400,
+                      borderBottom: tab === "drawings" ? "2px solid #1a1a1a" : "2px solid transparent",
+                      marginBottom: -1, display: "flex", alignItems: "center", gap: 6,
+                    }}>
+                      Креслення
+                      <span style={{ background: "#e67e22", color: "#fff", borderRadius: "50%", width: 16, height: 16, fontSize: 9, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace", fontWeight: 700 }}>{drawingCount}</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Tab content */}
+                <div style={{ overflowY: "auto", maxHeight: "calc(100vh - 200px)" }}>
+
+                  {/* ЗАКЛЮЧЕННЯ */}
+                  {tab === "overview" && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: 14 }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7 }}>
+                        {[
+                          { label: "ТЗ виконано", val: `${tzOk}/${items.length}`, col: "#27ae60" },
+                          { label: "Не виконано", val: tzFail, col: "#e74c3c" },
+                          { label: "Крит. дефектів", val: critCount, col: "#e67e22" },
+                          { label: "Матер. невідпов.", val: mismatches, col: "#9b59b6" },
+                        ].map((s, i) => (
+                          <div key={i} style={{ background: "#faf9f7", border: `1px solid ${s.col}22`, borderLeft: `3px solid ${s.col}`, borderRadius: "0 6px 6px 0", padding: "7px 10px" }}>
+                            <div style={{ fontSize: 9, color: "#aaa", fontFamily: "monospace" }}>{s.label}</div>
+                            <div style={{ fontSize: 18, fontWeight: 700, color: s.col, fontFamily: "monospace", lineHeight: 1.2 }}>{s.val}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <Verdict quality={quality} />
+                    </div>
+                  )}
+
+                  {/* ТЗ */}
+                  {tab === "tz" && (
+                    <div style={{ display: "flex", flexDirection: "column" }}>
+                      {items.map((item, i) => {
+                        const st = STATUS[item.status] || STATUS.partial;
+                        const key = `item:${i}`;
+                        const vis = effVisible.has(key);
+                        const isIrrel = irrelevant.has(key);
+                        return (
+                          <div key={i} onMouseEnter={() => setHovId(key)} onMouseLeave={() => setHovId(null)}
+                            style={{ padding: "11px 16px", borderBottom: "1px solid #f0eeea", background: isIrrel ? "#f5f4f1" : hovId === key ? "#faf9f7" : "#fff", display: "flex", gap: 10, alignItems: "flex-start", opacity: isIrrel ? 0.55 : 1, transition: "opacity 0.15s" }}>
+                            <div onClick={() => handleToggle(key, !vis)} style={{ cursor: "pointer", width: 22, height: 22, borderRadius: "50%", background: isIrrel ? "#ccc" : st.color, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, fontFamily: "monospace", flexShrink: 0, marginTop: 1 }}>{i + 1}</div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 12, fontWeight: 600, color: isIrrel ? "#aaa" : st.color, fontFamily: "monospace", lineHeight: 1.4, marginBottom: 2, textDecoration: isIrrel ? "line-through" : "none" }}>{item.comment}</div>
+                              {item.note && !isIrrel && <div style={{ fontSize: 11, color: "#999", lineHeight: 1.5 }}>{item.note}</div>}
+                            </div>
+                            <button onClick={() => toggleIrrelevant(key)} title="Відмітити як нерелевантне" style={{ background: isIrrel ? "#e8e4de" : "transparent", border: `1px solid ${isIrrel ? "#bbb" : "#e0ddd8"}`, color: isIrrel ? "#888" : "#ccc", borderRadius: 5, padding: "3px 7px", cursor: "pointer", fontSize: 10, fontFamily: "monospace", flexShrink: 0, transition: "all 0.15s" }}>
+                              {isIrrel ? "✕" : "⊘"}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* ПРАВКИ */}
+                  {tab === "corr" && (
+                    <div style={{ display: "flex", flexDirection: "column" }}>
+                      {corr.map((c, i) => {
+                        const key = `corr:${i}`;
+                        const vis = effVisible.has(key);
+                        const isIrrel = irrelevant.has(key);
+                        const priCol = c.priority === "high" ? "#e74c3c" : c.priority === "medium" ? "#e67e22" : "#3498db";
+                        return (
+                          <div key={i} onMouseEnter={() => setHovId(key)} onMouseLeave={() => setHovId(null)}
+                            style={{ padding: "11px 16px", borderBottom: "1px solid #f0eeea", background: isIrrel ? "#f5f4f1" : hovId === key ? "#faf9f7" : "#fff", display: "flex", gap: 10, alignItems: "flex-start", opacity: isIrrel ? 0.55 : 1, transition: "opacity 0.15s" }}>
+                            <div onClick={() => handleToggle(key, !vis)} style={{ cursor: "pointer", width: 22, height: 22, borderRadius: "50%", background: isIrrel ? "#ccc" : priCol, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, fontFamily: "monospace", flexShrink: 0, marginTop: 1 }}>{i + 1}</div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 12, fontWeight: 600, color: isIrrel ? "#aaa" : "#333", lineHeight: 1.4, marginBottom: 2, textDecoration: isIrrel ? "line-through" : "none" }}>{c.title}</div>
+                              {c.description && !isIrrel && <div style={{ fontSize: 11, color: "#999", lineHeight: 1.5 }}>{c.description}</div>}
+                            </div>
+                            <button onClick={() => toggleIrrelevant(key)} title="Відмітити як нерелевантне" style={{ background: isIrrel ? "#e8e4de" : "transparent", border: `1px solid ${isIrrel ? "#bbb" : "#e0ddd8"}`, color: isIrrel ? "#888" : "#ccc", borderRadius: 5, padding: "3px 7px", cursor: "pointer", fontSize: 10, fontFamily: "monospace", flexShrink: 0, transition: "all 0.15s" }}>
+                              {isIrrel ? "✕" : "⊘"}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* ДЕФЕКТИ */}
+                  {tab === "defects" && (
+                    <div style={{ display: "flex", flexDirection: "column" }}>
+                      {defects.map((d, i) => {
+                        const key = `defect:${i}`;
+                        const vis = effVisible.has(key);
+                        const isIrrel = irrelevant.has(key);
+                        const sevCol = d.severity === "high" ? "#e74c3c" : d.severity === "medium" ? "#e67e22" : "#3498db";
+                        const qCol = d.qa_tag ? QC[d.qa_tag] || "#888" : "#888";
+                        return (
+                          <div key={i} onMouseEnter={() => setHovId(key)} onMouseLeave={() => setHovId(null)}
+                            style={{ padding: "11px 16px", borderBottom: "1px solid #f0eeea", background: isIrrel ? "#f5f4f1" : hovId === key ? "#faf9f7" : "#fff", display: "flex", gap: 10, alignItems: "flex-start", opacity: isIrrel ? 0.55 : 1, transition: "opacity 0.15s" }}>
+                            <div onClick={() => handleToggle(key, !vis)} style={{ cursor: "pointer", width: 22, height: 22, borderRadius: "50%", background: isIrrel ? "#ccc" : sevCol, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, fontFamily: "monospace", flexShrink: 0, marginTop: 1 }}>{i + 1}</div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ display: "flex", gap: 5, alignItems: "center", marginBottom: 2, flexWrap: "wrap" }}>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: isIrrel ? "#aaa" : "#333", lineHeight: 1.4, textDecoration: isIrrel ? "line-through" : "none" }}>{d.title}</span>
+                                {d.qa_tag && !isIrrel && <span style={{ fontSize: 9, color: qCol, background: qCol + "18", padding: "1px 5px", borderRadius: 3, fontFamily: "monospace", fontWeight: 700 }}>{d.qa_tag}</span>}
+                              </div>
+                              {d.description && !isIrrel && <div style={{ fontSize: 11, color: "#999", lineHeight: 1.5 }}>{d.description}</div>}
+                            </div>
+                            <button onClick={() => toggleIrrelevant(key)} title="Відмітити як нерелевантне" style={{ background: isIrrel ? "#e8e4de" : "transparent", border: `1px solid ${isIrrel ? "#bbb" : "#e0ddd8"}`, color: isIrrel ? "#888" : "#ccc", borderRadius: 5, padding: "3px 7px", cursor: "pointer", fontSize: 10, fontFamily: "monospace", flexShrink: 0, transition: "all 0.15s" }}>
+                              {isIrrel ? "✕" : "⊘"}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* МАТЕРІАЛИ */}
+                  {tab === "materials" && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "10px 14px", borderBottom: "1px solid #f0eeea" }}>
+                        {Object.entries(MAT_STATUS).map(([k, v]) => {
+                          const cnt = materials.filter(m => m.status === k).length;
+                          if (!cnt) return null;
+                          return (
+                            <div key={k} style={{ background: v.bg, border: `1px solid ${v.color}33`, borderRadius: 6, padding: "3px 8px", display: "flex", gap: 4, alignItems: "center" }}>
+                              <span style={{ fontSize: 10 }}>{v.icon}</span>
+                              <span style={{ fontSize: 11, fontFamily: "monospace", color: v.color, fontWeight: 700 }}>{cnt}</span>
+                              <span style={{ fontSize: 9, fontFamily: "monospace", color: "#888" }}>{v.label}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {materials.map((m, i) => {
+                        const cfg = MAT_STATUS[m.status] || MAT_STATUS.unknown;
+                        const key = `material:${i}`;
+                        return (
+                          <div key={i} onMouseEnter={() => setHovId(key)} onMouseLeave={() => setHovId(null)}
+                            style={{ padding: "11px 16px", borderBottom: "1px solid #f0eeea", cursor: "default", background: hovId === key ? "#faf9f7" : "#fff" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 3 }}>
+                              <span style={{ fontSize: 12, fontWeight: 600, color: "#333", fontFamily: "monospace" }}>{m.name}</span>
+                              {m.group && <span style={{ fontSize: 9, background: "#f0eeea", color: "#888", padding: "1px 5px", borderRadius: 3, fontFamily: "monospace" }}>{m.group}</span>}
+                              {m.spec && <span style={{ fontSize: 9, background: "#e8f4fb", color: "#2980b9", padding: "1px 5px", borderRadius: 3, fontFamily: "monospace" }}>{m.spec}</span>}
+                              <span style={{ fontSize: 9, background: cfg.bg, color: cfg.color, padding: "1px 5px", borderRadius: 3, fontFamily: "monospace", fontWeight: 700, marginLeft: "auto" }}>{cfg.icon} {cfg.label}</span>
+                            </div>
+                            {m.note && <div style={{ fontSize: 10, color: "#777", fontFamily: "monospace" }}>{m.note}</div>}
+                            {m.expected && m.status !== "match" && <div style={{ fontSize: 10, color: "#aaa", fontFamily: "monospace", marginTop: 2 }}>Очікувалось: {m.expected}</div>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* КРЕСЛЕННЯ */}
+                  {tab === "drawings" && (
+                    <div style={{ padding: 14 }}>
+                      <BlueprintPanel drawings={drawings} anns={filteredAnns} visibleIds={effVisible} hovId={hovId} />
+                    </div>
+                  )}
+
+                </div>
+
+                {/* FLOATING BAR — з'являється коли є нерелевантні */}
+                {irrelevant.size > 0 && (
+                  <div style={{ borderTop: "2px solid #e8e4de", background: "#faf8f5", padding: "10px 16px", display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={{ flex: 1 }}>
+                      <span style={{ fontSize: 11, color: "#888", fontFamily: "monospace" }}>
+                        Відмічено як нерелевантне: <strong style={{ color: "#555" }}>{irrelevant.size}</strong>
+                      </span>
+                      <button onClick={() => setIrrelevant(new Set())} style={{ background: "none", border: "none", color: "#bbb", cursor: "pointer", fontSize: 10, fontFamily: "monospace", marginLeft: 8 }}>скинути</button>
+                    </div>
+                    <button onClick={handleReview} disabled={reviewing || !onReview} style={{ background: reviewing ? "#ccc" : "#1a1a1a", border: "none", color: "#fff", borderRadius: 7, padding: "8px 16px", cursor: reviewing ? "default" : "pointer", fontSize: 11, fontFamily: "monospace", fontWeight: 600, whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 6 }}>
+                      {reviewing
+                        ? <><div style={{ width: 10, height: 10, border: "1.5px solid #fff", borderTop: "1.5px solid transparent", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} /> Аналізую…</>
+                        : "↺ Переглянути рендер"
+                      }
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Grid card ────────────────────────────────────────────────────────────────
+function GridCard({ item, data, status, idx, isRev, onSelect }) {
+  const q = data?.quality;
+  const key = q?.standard?.startsWith("SDC") ? "SDC" : q?.standard?.startsWith("MLR") ? "MLR" : "NON";
+  const qcfg = q ? STANDARDS[key] : null;
+  const critC = (data?.defects || []).filter(d => d.severity === "high").length;
+  const notFixC = (data?.items || []).filter(x => x.status === "not_fixed").length;
+  const matC = (data?.materials || []).filter(m => m.status === "mismatch" || m.status === "missing").length;
+  const renderFiles = isRev ? (item.afters || []).filter(f => !f._loading && !f._error) : [item];
+  const beforeFiles = isRev ? (item.befores || []).filter(f => !f._loading && !f._error) : [];
+  const thumbBefore = beforeFiles[0]?.preview || beforeFiles[0]?.pages?.[0]?.preview;
+  const thumbAfter = renderFiles[0]?.preview || renderFiles[0]?.pages?.[0]?.preview;
+  const thumbSingle = item?.preview || item?.pages?.[0]?.preview;
+  const scoreColor = q ? (q.score >= 80 ? "#27ae60" : q.score >= 55 ? "#e67e22" : "#e74c3c") : "#aaa";
+
+  return (
+    <div onClick={status ? undefined : onSelect}
+      style={{ background: "#fff", border: "1px solid #e8e6e1", borderRadius: 12, overflow: "hidden", cursor: status ? "default" : "pointer", transition: "all 0.18s", boxShadow: "0 2px 8px rgba(0,0,0,0.05)", opacity: status ? 0.85 : 1 }}
+      onMouseEnter={e => { if (status) return; e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 8px 24px rgba(0,0,0,0.1)"; }}
+      onMouseLeave={e => { e.currentTarget.style.transform = ""; e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.05)"; }}>
+      {isRev ? (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", background: "#111", minHeight: 90, gap: 1, position: "relative" }}>
+          <div style={{ position: "relative" }}>
+            <div style={{ fontSize: 8, color: "#888", fontFamily: "monospace", padding: "2px 4px", background: "rgba(0,0,0,0.5)", position: "absolute", top: 0, left: 0, zIndex: 1 }}>ДО</div>
+            {thumbBefore ? <img src={thumbBefore} style={{ width: "100%", height: 90, objectFit: "cover" }} /> : <div style={{ height: 90, background: "#222" }} />}
+          </div>
+          <div style={{ position: "relative" }}>
+            <div style={{ fontSize: 8, color: "#27ae60", fontFamily: "monospace", padding: "2px 4px", background: "rgba(0,0,0,0.5)", position: "absolute", top: 0, left: 0, zIndex: 1 }}>ПІСЛЯ</div>
+            {thumbAfter ? <img src={thumbAfter} style={{ width: "100%", height: 90, objectFit: "cover" }} /> : <div style={{ height: 90, background: "#222" }} />}
+          </div>
+          {status && (
+            <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6 }}>
+              <div style={{ width: 20, height: 20, border: "2px solid #fff", borderTop: "2px solid transparent", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
+              <span style={{ fontSize: 10, color: "#fff", fontFamily: "monospace" }}>{status}</span>
+            </div>
+          )}
+          {q && !status && <div style={{ position: "absolute", top: 4, right: 4, background: qcfg.color, color: "#fff", padding: "2px 7px", borderRadius: 4, fontSize: 11, fontWeight: 700, fontFamily: "monospace" }}>{q.standard}</div>}
+        </div>
+      ) : (
+        <div style={{ position: "relative", background: "#111", aspectRatio: "16/10", overflow: "hidden" }}>
+          {thumbSingle
+            ? <img src={thumbSingle} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            : <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#444", fontFamily: "monospace", fontSize: 11 }}>немає превью</div>
+          }
+          {status && (
+            <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.65)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6 }}>
+              <div style={{ width: 20, height: 20, border: "2px solid #fff", borderTop: "2px solid transparent", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
+              <span style={{ fontSize: 10, color: "#fff", fontFamily: "monospace" }}>{status}</span>
+            </div>
+          )}
+          {q && !status && <div style={{ position: "absolute", top: 8, right: 8, background: qcfg.color, color: "#fff", padding: "3px 10px", borderRadius: 6, fontSize: 12, fontWeight: 700, fontFamily: "monospace" }}>{q.standard}</div>}
+        </div>
+      )}
+      <div style={{ padding: "10px 12px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <span style={{ fontSize: 11, fontFamily: "monospace", color: "#555", fontWeight: 600 }}>{isRev ? "Раунд" : "Ракурс"} {idx + 1}</span>
+          {q && !status && <span style={{ fontSize: 13, fontWeight: 700, color: scoreColor, fontFamily: "monospace" }}>{q.score}%</span>}
+        </div>
+        {q && !status && <div style={{ height: 3, background: "#eee", borderRadius: 2, overflow: "hidden", marginBottom: 7 }}><div style={{ height: "100%", width: `${q.score}%`, background: scoreColor, borderRadius: 2 }} /></div>}
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          {notFixC > 0 && <span style={{ fontSize: 9, background: "#e74c3c", color: "#fff", padding: "1px 6px", borderRadius: 3, fontFamily: "monospace" }}>❌ {notFixC}</span>}
+          {critC > 0 && <span style={{ fontSize: 9, background: "#e67e22", color: "#fff", padding: "1px 6px", borderRadius: 3, fontFamily: "monospace" }}>🔴 {critC}</span>}
+          {matC > 0 && <span style={{ fontSize: 9, background: "#9b59b6", color: "#fff", padding: "1px 6px", borderRadius: 3, fontFamily: "monospace" }}>🎨 {matC}</span>}
+        </div>
+        <div style={{ marginTop: 6, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          {data?.error && !status
+            ? <span style={{ fontSize: 10, color: "#e74c3c", fontFamily: "monospace" }}>Натисніть для деталей</span>
+            : <span />
+          }
+          <span style={{ fontSize: 10, color: "#3498db", fontFamily: "monospace" }}>Відкрити →</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Grid({ items, perData, statuses, globalSummary, onSelect, onRetry, mode }) {
+  const isRev = mode === "revision";
+  const errorCount = (perData || []).filter(d => d?.error).length;
+  return (
+    <div style={{ maxWidth: 1300, margin: "0 auto", padding: "20px 16px" }}>
+      {globalSummary && (
+        <div style={{ background: "#fff", border: "1px solid #e8e6e1", borderRadius: 10, padding: "12px 18px", marginBottom: 20, fontSize: 12, color: "#555", fontFamily: "monospace", lineHeight: 1.6 }}>
+          <span style={{ fontSize: 10, color: "#aaa", marginRight: 8 }}>ЗАГАЛЬНА ОЦІНКА</span>{globalSummary}
+        </div>
+      )}
+      {errorCount > 0 && onRetry && (
+        <div style={{ background: "#fff5f5", border: "1px solid #e74c3c44", borderRadius: 8, padding: "10px 16px", marginBottom: 14, display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontSize: 11, color: "#e74c3c", fontFamily: "monospace" }}>❌ {errorCount} {isRev ? "раундів" : "ракурсів"} не вдалось проаналізувати</span>
+          <button onClick={onRetry} style={{ background: "#e74c3c", border: "none", color: "#fff", borderRadius: 6, padding: "5px 14px", cursor: "pointer", fontSize: 11, fontFamily: "monospace" }}>
+            ↺ Повторити
+          </button>
+        </div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 14 }}>
+        {items.map((item, i) => (
+          <GridCard key={i} item={item} data={perData[i]} status={statuses[i]} idx={i} isRev={isRev} onSelect={() => onSelect(i)} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Upload box ───────────────────────────────────────────────────────────────
+function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", note }) {
+  const inputRef = useRef(); const [drag, setDrag] = useState(false); const ctr = useRef(0);
+  const onDrop = e => {
+    e.preventDefault(); setDrag(false); ctr.current = 0;
+    if (_dragging) {
+      onAddDone?.(_dragging.file);
+      _dragging.remove();
+      _dragging = null;
+    } else {
+      Array.from(e.dataTransfer.files).forEach(onAdd);
+    }
+  };
+  const ico = { pdf: "📄", dwg: "⚠️", dxf: "📐", excel: "📊", text: "📝", image: "🖼️", other: "📎" };
+  return (
+    <div>
+      {label && <div style={{ fontSize: 10, letterSpacing: "0.14em", color: "#888", marginBottom: note ? 2 : 5, fontFamily: "monospace" }}>{label}</div>}
+      {note && <div style={{ fontSize: 9, color: "#bbb", fontFamily: "monospace", marginBottom: 5 }}>{note}</div>}
+      <div onDragEnter={e => { e.preventDefault(); ctr.current++; setDrag(true); }} onDragLeave={e => { e.preventDefault(); if (--ctr.current === 0) setDrag(false); }} onDragOver={e => e.preventDefault()} onDrop={onDrop}
+        style={{ border: `2px dashed ${drag ? color : "#ddd"}`, borderRadius: 10, padding: 8, background: drag ? color + "11" : "#fafafa", minHeight: 90 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-start" }}>
+          {files.map((f, i) => {
+            const prev = f.preview || f.pages?.[0]?.preview;
+            return (
+              <div key={f._id || i} draggable={!f._loading && f._done} onDragStart={() => { _dragging = { file: f, remove: () => onRemove(i) }; }} onDragEnd={() => { _dragging = null; }} style={{ position: "relative", width: 70, height: 70, flexShrink: 0, cursor: (!f._loading && f._done) ? "grab" : "default" }}>
+                {prev && f.type !== "excel"
+                  ? <img src={prev} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 5, border: `1px solid ${f._error ? "#e74c3c" : f._done ? color : "#ddd"}`, filter: f._loading ? "brightness(0.4)" : "none" }} />
+                  : <div style={{ width: "100%", height: "100%", borderRadius: 5, border: `1px solid ${f._error ? "#e74c3c" : f._done ? color : "#ddd"}`, background: f._error ? "#3a1a1a" : f.type === "dwg" ? "#0a1929" : f.type === "excel" ? "#0d2b0d" : "#f0eeea", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}>
+                    <div style={{ fontSize: 18 }}>{f._error ? "⚠️" : ico[f.type] || ico.other}</div>
+                    <div style={{ fontSize: 7, color: f._error ? "#ff8888" : "#888", fontFamily: "monospace", textAlign: "center", padding: "0 3px", wordBreak: "break-all", lineHeight: 1.2 }}>{f._error ? "ERR" : (f.ext || f.type?.toUpperCase() || "...")}</div>
+                  </div>}
+                {f._loading && (
+                  <div style={{ position: "absolute", inset: 0, borderRadius: 5, background: "rgba(0,0,0,0.7)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+                    <svg width="30" height="30" style={{ transform: "rotate(-90deg)" }}>
+                      <circle cx="15" cy="15" r="11" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="2.5" />
+                      <circle cx="15" cy="15" r="11" fill="none" stroke="#fff" strokeWidth="2.5" strokeDasharray={`${2 * Math.PI * 11}`} strokeDashoffset={`${2 * Math.PI * 11 * (1 - (f._progress || 0) / 100)}`} strokeLinecap="round" />
+                    </svg>
+                    <div style={{ fontSize: 8, color: "#fff", fontFamily: "monospace" }}>{f._progress || 0}%</div>
+                    <button onPointerDown={e => { e.stopPropagation(); f._ctrl?.abort(); }} style={{ marginTop: 2, background: "#e74c3c", border: "none", borderRadius: 3, color: "#fff", fontSize: 8, padding: "2px 5px", cursor: "pointer" }}>✕</button>
+                  </div>
+                )}
+                {!f._loading && f._done && <div style={{ position: "absolute", top: -5, left: -5, width: 15, height: 15, background: color, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8, color: "#fff" }}>✓</div>}
+                {!f._loading && f.type === "pdf" && f.pages?.length > 1 && <div style={{ position: "absolute", bottom: 2, left: 2, background: "#333", color: "#fff", fontSize: 7, fontFamily: "monospace", padding: "1px 3px", borderRadius: 2 }}>{f.pages.length}с</div>}
+                {!f._loading && f.type === "excel" && <div style={{ position: "absolute", bottom: 2, left: 2, background: "#27ae60", color: "#fff", fontSize: 7, fontFamily: "monospace", padding: "1px 3px", borderRadius: 2 }}>XLS</div>}
+                {!f._loading && <button onClick={() => onRemove(i)} style={{ position: "absolute", top: -5, right: -5, width: 16, height: 16, background: "#e74c3c", color: "#fff", border: "none", borderRadius: "50%", cursor: "pointer", fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>}
+              </div>
+            );
+          })}
+          <div onClick={() => inputRef.current.click()} style={{ width: 70, height: 70, border: `2px dashed ${color}`, borderRadius: 8, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
+            <div style={{ fontSize: 20, color }}>+</div>
+            <div style={{ fontSize: 8, color: "#bbb", fontFamily: "monospace" }}>додати</div>
+          </div>
+        </div>
+        {!drag && <div style={{ fontSize: 8, color: "#ccc", fontFamily: "monospace", textAlign: "center", marginTop: 4 }}>↑ або перетягніть</div>}
+      </div>
+      <input ref={inputRef} type="file" accept="*/*" multiple style={{ display: "none" }} onChange={e => { Array.from(e.target.files).forEach(onAdd); e.target.value = ""; }} />
+    </div>
+  );
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+export default function App() {
+  const [mode, setMode] = useState("first");
+  const [step, setStep] = useState(1);
+  const [err, setErr] = useState("");
+  const [sel, setSel] = useState(null);
+  const [briefText, setBriefText] = useState("");
+  const [perData, setPerData] = useState([]);
+  const [statuses, setStatuses] = useState([]);
+  const [globalSum, setGlobalSum] = useState("");
+  const [anthropicKey, setAnthropicKey] = useState(() => { try { return localStorage.getItem("anthropic_api_key") || ""; } catch { return ""; } });
+  const saveAnthropicKey = k => { setAnthropicKey(k); try { localStorage.setItem("anthropic_api_key", k); } catch {} };
+  const [archivizerToken, setArchivizerToken] = useState(() => { try { return localStorage.getItem("archivizer_token") || ""; } catch { return ""; } });
+  const saveArchivizerToken = k => { setArchivizerToken(k); try { localStorage.setItem("archivizer_token", k); } catch {} };
+  const [archivizerUrl, setArchivizerUrl] = useState("");
+  const [archivizerStatus, setArchivizerStatus] = useState(null);
+
+  const renders = useFileList(); const briefs = useFileList(); const refs = useFileList(); const draws = useFileList();
+  const revBriefs = useFileList(); const revRefs = useFileList(); const revDraws = useFileList();
+
+  // Після конвертації DWG→DXF оновлюємо файл у списку
+  const handleDwgConverted = useCallback((fileList, dwgFile, dxfText) => {
+    fileList.ref.current = fileList.ref.current.map(f =>
+      f._id === dwgFile._id
+        ? { ...f, type: "dxf", ext: "DXF", textContent: dxfText, _done: true }
+        : f
+    );
+    // форсуємо ре-рендер
+    fileList.ref.current = [...fileList.ref.current];
+  }, []);
+
+  const [pairs, setPairs] = useState([{ id: 1, comment: "" }]);
+  const pairBefores = useRef({}); const pairAfters = useRef({});
+  const [, setPairTick] = useState(0);
+  const bumpPairs = () => setPairTick(t => t + 1);
+
+  const getPF = (id, side) => { const s = side === "before" ? pairBefores : pairAfters; if (!s.current[id]) s.current[id] = []; return s.current[id]; };
+  const addPF = (id, side, file) => {
+    const s = side === "before" ? pairBefores : pairAfters;
+    if (!s.current[id]) s.current[id] = [];
+    const fid = "f" + Date.now() + "_" + Math.random().toString(36).slice(2);
+    const ctrl = new AbortController();
+    s.current[id] = [...s.current[id], { _id: fid, _loading: true, _progress: 0, _ctrl: ctrl, filename: file.name, preview: null, pages: [], type: null }];
+    bumpPairs();
+    processFile(file, pct => { s.current[id] = s.current[id].map(x => x._id === fid ? { ...x, _progress: pct } : x); bumpPairs(); }, ctrl.signal)
+      .then(d => { s.current[id] = s.current[id].map(x => x._id === fid ? { ...d, _id: fid, _loading: false, _done: true } : x); bumpPairs(); })
+      .catch(e => { if (e.name === "AbortError") s.current[id] = s.current[id].filter(x => x._id !== fid); else s.current[id] = s.current[id].map(x => x._id === fid ? { ...x, _loading: false, _error: true } : x); bumpPairs(); });
+  };
+  const removePF = (id, side, idx) => { const s = side === "before" ? pairBefores : pairAfters; s.current[id] = (s.current[id] || []).filter((_, i) => i !== idx); bumpPairs(); };
+
+  const readyFiles = fl => (fl.files || []).filter(f => !f._loading && !f._error && f._done && (
+    f.pages?.some(p => p.b64) || f.textContent || f.type === "dwg"
+  ));
+  const matNote = files => {
+    const ex = (files || []).filter(f => f.type === "excel" && f.textContent);
+    const dxf = (files || []).filter(f => f.type === "dxf" && f.textContent);
+    const dwg = (files || []).filter(f => f.type === "dwg" && f.textContent && !f.textContent.includes("помилка"));
+    const txt = (files || []).filter(f => f.type === "text" && f.textContent);
+    let out = "";
+    if (ex.length) out += `\n\nСПЕЦИФІКАЦІЯ МАТЕРІАЛІВ (Excel):\n${ex.map(e => `[${e.filename}]:\n${e.textContent.slice(0, 4000)}`).join("\n---\n")}`;
+    if (dxf.length) out += `\n\nDXF КРЕСЛЕННЯ:\n${dxf.map(d => `[${d.filename}]:\n${d.textContent.slice(0, 5000)}`).join("\n---\n")}`;
+    if (dwg.length) out += `\n\nDWG КРЕСЛЕННЯ (витягнуто з бінарного файлу):\n${dwg.map(d => `[${d.filename}]:\n${d.textContent.slice(0, 5000)}`).join("\n---\n")}`;
+    if (txt.length) out += `\n\nДОКУМЕНТИ ТЗ:\n${txt.map(t => `[${t.filename}]:\n${t.textContent.slice(0, 5000)}`).join("\n---\n")}`;
+    return out;
+  };
+
+  async function runAnalysis() {
+    const isRev = mode === "revision";
+    if (isRev) {
+      const vp = pairs.filter(p => {
+        const b = getPF(p.id, "before").filter(f => !f._loading && !f._error && (f.pages?.some(pg => pg.b64) || f.type === "excel"));
+        const a = getPF(p.id, "after").filter(f => !f._loading && !f._error && (f.pages?.some(pg => pg.b64) || f.type === "excel"));
+        return b.length > 0 && a.length > 0;
+      });
+      if (!vp.length) { setErr("Завантажте хоча б одну пару ДО/ПІСЛЯ."); return; }
+      setErr(""); setStep(2); setSel(null);
+      const results = vp.map(() => null); setPerData([...results]);
+      setStatuses(vp.map((_, i) => i === 0 ? "Аналізую…" : "У черзі…"));
+      for (let ri = 0; ri < vp.length; ri++) {
+        setStatuses(prev => prev.map((s, i) => i === ri ? "Аналізую…" : i > ri ? "У черзі…" : null));
+        const pair = vp[ri];
+        const bFiles = getPF(pair.id, "before").filter(f => !f._loading && !f._error);
+        const aFiles = getPF(pair.id, "after").filter(f => !f._loading && !f._error);
+        const mn = matNote([...readyFiles(revBriefs), ...readyFiles(revDraws)]);
+        const isLast = ri === vp.length - 1;
+        const revTzLower = (pair.comment || "").toLowerCase();
+        const revHasDrawings = readyFiles(revDraws).filter(d => d.pages?.some(p => p.b64) || d.textContent).length > 0;
+
+        // Визначаємо що саме перевіряти в цьому раунді
+        const revBlocks = [`── ПОРІВНЯННЯ ДО/ПІСЛЯ ──
+Для кожної правки з переліку:
+• fixed = повністю усунуто
+• partial = покращено але є залишки або нові проблеми в зоні
+• not_fixed = не змінилось або стало гірше`];
+
+        revBlocks.push(`── НОВІ ДЕФЕКТИ (Q1.1-Q1.6) ──
+Чи з'явились нові технічні проблеми яких не було на ДО?
+Левітація, перетин, тайлінг, артефакти, аліасинг, матеріали.`);
+
+        if (revHasDrawings) revBlocks.push(`── ВІДПОВІДНІСТЬ КРЕСЛЕННЯМ (Q2.1) ──\n${BLUEPRINT_COMPARE_PROMPT}`);
+
+        if (/лого|logo|напис|sign|banner/.test(revTzLower)) {
+          revBlocks.push(`── НАПИСИ / ЛОГО (Q3.2) ──\nПравильність написів, відсутність placeholder тексту.`);
+        }
+
+        revBlocks.push(`── РЕОСЕТТИНГ (Q3.1) ──
+Чи виправлено проблеми геосеттингу якщо вони були в правках?
+Розетки, номери, написи на техніці, штори, рослинність.`);
+
+        revBlocks.push(`── РЕГРЕСІЯ ──
+Чи не погіршились інші місця при виправленні? Зона що не входила в правки але змінилась.`);
+
+        const parts = [{ type: "text", text: `Ти — старший QA-спеціаліст 3D-візуалізації. Раунд правок ${ri + 1} з ${vp.length}.
+
+ПРАВКИ ЦЬОГО РАУНДУ:
+${pair.comment?.trim() || "(порівняй ДО і ПІСЛЯ візуально — знайди всі зміни)"}
+${mn}
+
+${ZONE_PROMPT}
+
+${revBlocks.join("\n\n")}
+
+СТАНДАРТИ ЯКОСТІ: ${QUAL_C}
+
+ПРАВИЛА:
+- Перевіряй ТІЛЬКИ те що релевантне до цього раунду правок
+- zone завжди на зображенні ПІСЛЯ (не ДО)
+- Кожна проблема ОБОВ'ЯЗКОВО має zone
+${isLast ? "- Заповни globalSummary — підсумок всіх раундів." : '- globalSummary: ""'}
+
+ВІДПОВІДАЙ ТІЛЬКИ JSON:
+${JSON_SCHEMA}` }];
+        parts.push(...filesToParts(bFiles, "ДО"));
+        parts.push(...filesToParts(aFiles, "ПІСЛЯ"));
+        parts.push(...filesToParts(readyFiles(revBriefs), "БРИФ"));
+        parts.push(...filesToParts(readyFiles(revRefs), "РЕФЕРЕНС"));
+        parts.push(...filesToParts(readyFiles(revDraws), "КРЕСЛЕННЯ"));
+        try {
+          const p = await callAPI(parts, 2, anthropicKey);
+          results[ri] = { items: p.items || [], corrections: p.corrections || [], defects: p.defects || [], materials: p.materials || [], quality: p.quality || null, summary: p.summary || "" };
+          if (p.globalSummary) setGlobalSum(p.globalSummary);
+        } catch (e) { results[ri] = { items: [], corrections: [], defects: [], materials: [], quality: null, error: e.message }; }
+        setPerData([...results]);
+        setStatuses(prev => prev.map((s, i) => i === ri ? null : s));
+      }
+    } else {
+      const rImages = readyFiles(renders).filter(f => f.pages?.some(p => p.b64));
+      if (!rImages.length) { setErr("Завантажте хоча б один рендер."); return; }
+      setErr(""); setStep(2); setSel(null);
+      const results = rImages.map(() => null); setPerData([...results]);
+      setStatuses(rImages.map((_, i) => i === 0 ? "Аналізую…" : "У черзі…"));
+      const drawsList = readyFiles(draws);
+      const briefsList = readyFiles(briefs);
+      const refsList = readyFiles(refs);
+      const mn = matNote([...briefsList, ...drawsList]);
+      const drawCount = drawsList.filter(d => d.pages?.some(p => p.b64)).length;
+      const hasDwgText = drawsList.filter(d => (d.type === "dxf" || d.type === "dwg") && d.textContent).length > 0;
+      const hasBrief = briefText.trim() || briefsList.length > 0;
+      const hasRefs = refsList.length > 0;
+      const hasExcel = drawsList.some(d => d.type === "excel") || briefsList.some(d => d.type === "excel");
+
+      // Визначаємо тип проекту з тексту ТЗ
+      const tzLower = briefText.toLowerCase();
+      const isExterior = /екстер|exterior|фасад|facade|будинок|house|office|building|landscape|ландшафт/.test(tzLower);
+      const isInterior = !isExterior || /інтер|interior|кімнат|room|kitchen|living/.test(tzLower);
+      const hasLogoMention = /лого|logo|brand|вивіск|sign|banner|neon/.test(tzLower);
+      const isMiddleEast = /middle east|arab|dubai|uae|qatar|saudi|халяль/.test(tzLower);
+      const hasLandscape = /ландшафт|landscape|garden|сад|озеленен/.test(tzLower);
+
+      for (let ri = 0; ri < rImages.length; ri++) {
+        setStatuses(prev => prev.map((s, i) => i === ri ? "Аналізую…" : i > ri ? "У черзі…" : null));
+        const render = rImages[ri]; const isLast = ri === rImages.length - 1;
+
+        // ── Формуємо тільки релевантні блоки перевірки ──
+        const blocks = [];
+
+        // Блок 1: Технічні дефекти — ЗАВЖДИ
+        blocks.push(`── БЛОК 1: ТЕХНІЧНІ ДЕФЕКТИ (завжди перевіряй) ──
+Q1.1 ЛЕВІТАЦІЯ: Всі предмети стоять на поверхні? Ніжки меблів, декор, килими. Немає тіні = левітація.
+Q1.2 ПЕРЕТИН: Об'єкти крізь стіни/підлогу/стелю/одне одного? Будь-який кліппінг = баг.
+Q1.3 ТЕКСТУРИ: Тайлінг видно? Стрейчінг? Неправильний масштаб? Шви між поверхнями?
+Q1.4 ЗУБЧАТІСТЬ: Зубчасті краї на кривих лініях, поручнях, тонких об'єктах?
+Q1.5 АРТЕФАКТИ: Fireflies, noise, blotchy shadows, темні плями на стелі/кутах?
+Q1.6 МАТЕРІАЛИ: IOR коректний? Roughness відповідає? Пластиковий вигляд у металів?`);
+
+        // Блок 2: Креслення — тільки якщо надані
+        if (drawCount > 0 || hasDwgText) {
+          blocks.push(`── БЛОК 2: ВІДПОВІДНІСТЬ КРЕСЛЕННЯМ (надані — перевіряй суворо) ──
+${BLUEPRINT_COMPARE_PROMPT}
+${isExterior ? "• Фасади (Elevations): пропорції, висоти, деталі?\n• Гребінь/коник даху: правильна форма?\n• Цегла/сайдинг: відповідає кресленню?\n• Водостоки (Gutter): наявні та правильно розміщені?\n• Вентканали: присутні згідно плану?" : ""}
+${isInterior ? "• Floorplan: меблі на своїх місцях?\n• Вікна/двері/ручки/плінтуси/карнизи: всі деталі присутні?\n• Розкладка плитки/підлог: патерн та напрямок відповідає?\n• Освітлення/розетки по electrical plan?" : ""}
+${hasLandscape || isExterior ? "• Ландшафтний план: озеленення, доріжки, зони відповідають?" : ""}`);
+        }
+
+        // Блок 3: Бриф/Мудборд — тільки якщо є бриф або референси
+        if (hasBrief || hasRefs) {
+          blocks.push(`── БЛОК 3: ВІДПОВІДНІСТЬ БРИФУ / МУДБОРДУ ──
+• Побажання клієнта з ТЗ: кожен пункт виконано?
+• Пора року: рослинність і атмосфера відповідають (якщо вказано)?
+• День/ніч: тип освітлення, небо, світло у вікнах відповідає?
+• Кольори/матеріали/стиль: відповідають мудборду?
+${hasRefs ? "• Відповідність референсам: настрій і атмосфера схожі?" : ""}
+• Тип освітлення: природне/штучне/змішане — відповідає запиту?`);
+        }
+
+        // Блок 4: Специфічні моделі — тільки якщо в ТЗ є запит
+        if (hasBrief && /меблі|мебель|furniture|росли|plant|декор|decor|модел/.test(tzLower)) {
+          blocks.push(`── БЛОК 4: СПЕЦИФІЧНІ МОДЕЛІ ПО ЗАПИТУ (якщо в ТЗ є конкретні запити) ──
+• Конкретні меблі/бренди з ТЗ: присутні?
+• Конкретні рослини/види: присутні?
+• Предмети декору по запиту: присутні?
+Перевіряй ТІЛЬКИ те що явно запитано в ТЗ — не вигадуй.`);
+        }
+
+        // Блок 5: Геосеттинг — завжди але адаптовано до типу
+        const reosettingItems = [
+          isInterior && "• Розетки: наявні на стінах в логічних місцях?",
+          isExterior && "• Номери машин: не безглузді символи?",
+          "• Рослинність: виглядає природно, не copy-paste клони?",
+          isExterior && "• Дороги/знаки/розмітка/зливи: відповідають країні проекту?",
+          "• Формат часу на техніці/вивісках: коректний (не 88:88)?",
+          isInterior && "• Сантехніка: деталі виглядають реалістично?",
+          "• Штори/жалюзі: природно звисають, складки реалістичні?",
+          isMiddleEast && "• Одяг на людях: відповідний дрес-код (Middle East)?",
+          "• BEK/фон: оточення логічне та доречне?",
+        ].filter(Boolean).join("\n");
+        blocks.push(`── БЛОК 5: РЕОСЕТТИНГ (деталі реалізму) ──\n${reosettingItems}`);
+
+        // Блок 6: Написи/Лого — тільки якщо є ознаки
+        if (hasLogoMention || isExterior || /комерц|commercial|shop|office|retail/.test(tzLower)) {
+          blocks.push(`── БЛОК 6: НАПИСИ / ЛОГО / НЕЙМИНГ ──
+• Логотипи: правильно відображені, не спотворені?
+• Написи на вивісках/банерах: осмислені, не Lorem Ipsum?
+• Написи англійською: граматично правильні?
+• Шрифти: відповідають брендбуку або запиту?`);
+        }
+
+        // Блок 7: Client Critical — тільки якщо є специфічні вимоги в ТЗ
+        if (/dpi|resolution|розрішен|формат|tif|psd|маск|mask|ratio|actq/.test(tzLower)) {
+          blocks.push(`── БЛОК 7: CLIENT CRITICAL REQUIREMENTS ──
+• Перевір з ТЗ: розрішення/DPI, нейминг файлів, співвідношення сторін, формат (TIFF/PSD/маски), Studio standards ACTQ.`);
+        }
+
+        const activeChecklist = blocks.join("\n\n");
+
+        const parts = [{ type: "text", text: `Ти — старший QA-спеціаліст 3D-візуалізації. Перевіряєш ракурс ${ri + 1} з ${rImages.length}.
+
+ТЗ КЛІЄНТА:
+${briefText.trim() || "(дивись прикріплені матеріали)"}
+${mn}
+
+${ZONE_PROMPT}
+
+АКТИВНІ БЛОКИ ПЕРЕВІРКИ (сформовані на основі наданих матеріалів):
+${activeChecklist}
+
+СТАНДАРТИ ЯКОСТІ:
+${QUAL_C}
+
+ПРАВИЛА:
+- Перевіряй ТІЛЬКИ те що реально можна побачити або перевірити на основі наданих матеріалів
+- Якщо блок не релевантний (наприклад креслень немає — не вигадуй невідповідності по кресленню)
+- Кожна проблема ОБОВ'ЯЗКОВО має zone з точними координатами
+- qa_tag: Q1.1-Q1.6 (технічні), Q2.1 (креслення), Q2.2 (бриф), Q2.3 (моделі), Q3.1 (геосеттинг), Q3.2 (написи), Q4.1 (client req)
+${isLast ? "- Заповни globalSummary — загальна оцінка всього проекту." : '- globalSummary: ""'}
+
+ВІДПОВІДАЙ ТІЛЬКИ JSON:
+${JSON_SCHEMA}` }];
+        (render.pages || []).filter(p => p.b64).forEach((pg, pi) => {
+          parts.push({ type: "text", text: `РЕНДЕР ${ri + 1}${pi > 0 ? ` стор.${pi + 1}` : ""}:` });
+          parts.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: pg.b64 } });
+        });
+        parts.push(...filesToParts(briefsList, "БРИФ"));
+        parts.push(...filesToParts(readyFiles(refs), "РЕФЕРЕНС"));
+        parts.push(...filesToParts(drawsList, "КРЕСЛЕННЯ"));
+        try {
+          const p = await callAPI(parts, 2, anthropicKey);
+          results[ri] = { items: p.items || [], corrections: p.corrections || [], defects: p.defects || [], materials: p.materials || [], quality: p.quality || null, summary: p.summary || "" };
+          if (p.globalSummary) setGlobalSum(p.globalSummary);
+        } catch (e) { results[ri] = { items: [], corrections: [], defects: [], materials: [], quality: null, error: e.message }; }
+        setPerData([...results]);
+        setStatuses(prev => prev.map((s, i) => i === ri ? null : s));
+        // Пауза між запитами щоб не впиратись в rate limit
+        if (ri < rImages.length - 1) await new Promise(r => setTimeout(r, 1500));
+      }
+    }
+  }
+
+  async function retryFailed() {
+    const rImages = readyFiles(renders).filter(f => f.pages?.some(p => p.b64));
+    const failedIdxs = perData.map((d, i) => d?.error ? i : -1).filter(i => i >= 0);
+    if (!failedIdxs.length) return;
+    const newStatuses = perData.map((d, i) => d?.error ? "Повтор…" : statuses[i]);
+    setStatuses([...newStatuses]);
+    const results = [...perData];
+    const drawsList = readyFiles(draws);
+    const briefsList = readyFiles(briefs);
+    const mn = matNote([...briefsList, ...drawsList]);
+    const drawCount = drawsList.filter(d => d.type !== "excel").length;
+    for (const ri of failedIdxs) {
+      const render = rImages[ri]; if (!render) continue;
+      const isLast = ri === rImages.length - 1;
+      const drawNote = drawCount > 0 ? `\nКреслень надано: ${drawCount} шт. — ${BLUEPRINT_COMPARE_PROMPT}` : "";
+      const parts = [{ type: "text", text: `Ти — старший арт-директор і QA-спеціаліст 3D-візуалізації інтер'єрів. Ракурс ${ri + 1} з ${rImages.length}.\n\nТЗ:\n${briefText.trim() || "(дивись матеріали)"}\n${drawNote}${mn}\n\n${ZONE_PROMPT}\n\n${QA_CHECKLIST_DETAIL}\n\nСТАНДАРТИ: ${QUAL_C}\n${isLast ? "Заповни globalSummary." : 'globalSummary: ""'}\n\nВІДПОВІДАЙ ТІЛЬКИ JSON:\n${JSON_SCHEMA}` }];
+      (render.pages || []).filter(p => p.b64).forEach((pg, pi) => {
+        parts.push({ type: "text", text: `РЕНДЕР ${ri + 1}${pi > 0 ? ` стор.${pi + 1}` : ""}:` });
+        parts.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: pg.b64 } });
+      });
+      parts.push(...filesToParts(briefsList, "БРИФ"));
+      parts.push(...filesToParts(readyFiles(refs), "РЕФЕРЕНС"));
+      parts.push(...filesToParts(drawsList, "КРЕСЛЕННЯ"));
+      try {
+        const p = await callAPI(parts, 2, anthropicKey);
+        results[ri] = { items: p.items || [], corrections: p.corrections || [], defects: p.defects || [], materials: p.materials || [], quality: p.quality || null, summary: p.summary || "" };
+        if (p.globalSummary) setGlobalSum(p.globalSummary);
+      } catch (e) { results[ri] = { items: [], corrections: [], defects: [], materials: [], quality: null, error: e.message }; }
+      setPerData([...results]);
+      setStatuses(prev => prev.map((s, i) => i === ri ? null : s));
+      if (ri !== failedIdxs[failedIdxs.length - 1]) await new Promise(r => setTimeout(r, 1500));
+    }
+  }
+
+  async function loadFromArchivizer() {
+    if (!archivizerToken.trim()) { setArchivizerStatus({ error: "Введіть Archivizer токен" }); return; }
+    if (!archivizerUrl.trim()) { setArchivizerStatus({ error: "Введіть посилання на задачу" }); return; }
+    const match = archivizerUrl.match(/tasks\/([^/?#\s]+)/);
+    if (!match) { setArchivizerStatus({ error: "Невірне посилання. Приклад: https://archivizer.com/tasks/WF8PSTKA" }); return; }
+    const taskId = match[1];
+    const headers = { "Content-Type": "application/json", "Authorization": `Bearer ${archivizerToken.trim()}` };
+    const arcFetch = async (url, body) => {
+      const r = await fetch(url, { method: "POST", headers: { ...headers, "x-real-method": "GET" }, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    };
+    const proxyUrl = u => (u || "").replace("https://static.archivizer.com", "/archivizer-static");
+
+    try {
+      // 1. Деталі задачі — пропускаємо, API не підтримує пошук по slug
+      let taskInfo = {};
+
+      // 2. Повідомлення задачі
+      setArchivizerStatus({ loading: true, msg: "Завантаження повідомлень..." });
+      let messages = [];
+      const msgEndpoints = [
+        ["/archivizer/api/v3/messages", { filters: { task_id: taskId } }],
+        [`/archivizer/api/v3/tasks/${taskId}/messages`, {}],
+      ];
+      for (const [url, body] of msgEndpoints) {
+        try {
+          const msgData = await arcFetch(url, body);
+          const items = msgData.data || msgData || [];
+          if (Array.isArray(items) && items.length >= 0) {
+            messages = items;
+            console.log(`Messages loaded from ${url}:`, messages.length);
+            break;
+          }
+        } catch(e) { console.log(`Messages endpoint ${url} failed: ${e.message}`); }
+      }
+      if (messages.length === 0) console.warn("All message endpoints failed or returned empty");
+
+      // Автозаповнення поля ТЗ — задача + повідомлення
+      const tzLines = [];
+      if (taskInfo.name || taskInfo.title) tzLines.push(`ЗАДАЧА: ${taskInfo.name || taskInfo.title}`);
+      if (taskInfo.description || taskInfo.body) tzLines.push(`ОПИС:\n${taskInfo.description || taskInfo.body || ""}`);
+      if (taskInfo.stage?.name) tzLines.push(`СТАДІЯ: ${taskInfo.stage.name}`);
+      if (messages.length > 0) {
+        tzLines.push("\nПОВІДОМЛЕННЯ:");
+        messages.forEach(m => {
+          const author = m.user?.name || m.author?.name || m.sender?.name || "?";
+          const text = (m.body || m.text || m.content || "").trim();
+          const time = m.created_at ? new Date(m.created_at).toLocaleDateString("uk") : "";
+          if (text) tzLines.push(`[${time} ${author}]: ${text}`);
+        });
+      }
+      if (tzLines.length > 0) setBriefText(tzLines.join("\n"));
+
+      // 3. Список файлів (з пагінацією)
+      setArchivizerStatus({ loading: true, msg: "Завантаження списку файлів..." });
+      const fetchAllPages = async (endpoint, filters) => {
+        const items = [];
+        let page = 1;
+        while (true) {
+          const data = await arcFetch(endpoint, { filters, page, per_page: 50 });
+          const batch = data.data || (Array.isArray(data) ? data : []);
+          items.push(...batch);
+          console.log(`${endpoint} page ${page}: ${batch.length} items, has_more: ${data.meta?.has_more}`);
+          if (!data.meta?.has_more || batch.length === 0) break;
+          page++;
+          if (page > 20) break; // safety limit
+        }
+        return items;
+      };
+
+      const allFiles = await fetchAllPages("/archivizer/api/v3/file_attachments", { task_id: taskId });
+      console.log("Total files fetched:", allFiles.length);
+      if (!allFiles.length) { setArchivizerStatus({ ok: "Файлів не знайдено" }); return; }
+
+      // 4. Claude аналізує файли (якщо є API ключ)
+      let categories = {}; // index -> "render"|"brief"|"reference"|"drawing"|"skip"
+      if (anthropicKey.trim()) {
+        setArchivizerStatus({ loading: true, msg: "Клод аналізує файли задачі..." });
+        const taskContext = [
+          taskInfo.name || taskInfo.title ? `Назва: ${taskInfo.name || taskInfo.title}` : "",
+          taskInfo.description || taskInfo.body ? `Опис: ${(taskInfo.description || taskInfo.body || "").slice(0, 800)}` : "",
+          taskInfo.stage?.name ? `Стадія: ${taskInfo.stage.name}` : "",
+        ].filter(Boolean).join("\n");
+
+        const msgContext = messages.length > 0
+          ? messages.slice(-30).map(m => {
+              const author = m.user?.name || m.author?.name || m.sender?.name || "?";
+              const text = (m.body || m.text || m.content || "").slice(0, 300);
+              const time = m.created_at ? new Date(m.created_at).toLocaleDateString("uk") : "";
+              return `[${time} ${author}]: ${text}`;
+            }).join("\n")
+          : "";
+
+        const fileList = allFiles.map((f, i) =>
+          `${i}: "${f.name}" (${f.size ? Math.round(f.size/1024)+"KB" : "?"}, ${f.content_type || ""})`
+        ).join("\n");
+
+        const prompt = `Ти — QA-асистент для перевірки 3D-рендерів інтер'єрів.
+${taskContext ? `\nКонтекст задачі:\n${taskContext}\n` : ""}${msgContext ? `\nПовідомлення в задачі (від клієнта та команди):\n${msgContext}\n` : ""}
+Список файлів задачі:
+${fileList}
+
+Визнач категорію кожного файлу з урахуванням контексту задачі та повідомлень. Відповідай ТІЛЬКИ JSON масивом без пояснень:
+[{"i":0,"cat":"render"}, ...]
+
+Категорії:
+- "render" — фінальний рендер для QA (зображення інтер'єру/кімнати що здається на перевірку)
+- "brief" — ТЗ, бриф, специфікація, таблиця матеріалів, прайс, Excel/CSV, Word, PDF з описом
+- "reference" — референс зображення, мудборд, фото для настрою (не рендер цього проекту)
+- "drawing" — креслення, план, DWG, DXF файл
+- "skip" — архіви, технічні файли, дублікати, непотрібне`;
+        try {
+          const resp = await fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true", "x-api-key": anthropicKey.trim() },
+            body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 1000, messages: [{ role: "user", content: prompt }] })
+          });
+          const data = await resp.json();
+          const text = data.content?.[0]?.text || "";
+          const jsonMatch = text.match(/\[[\s\S]*\]/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            parsed.forEach(({ i, cat }) => { categories[i] = cat; });
+            console.log("Claude categorization:", categories);
+          }
+        } catch(e) { console.warn("Claude categorization failed:", e.message); }
+      }
+
+      // Fallback: якщо Claude не відповів — визначаємо по розширенню
+      const isImageExt = name => /\.(jpe?g|png|webp|gif|bmp|tiff?)$/i.test(name || "");
+      const isDwgExt = name => /\.(dwg|dxf)$/i.test(name || "");
+      const getCategoryFallback = f => {
+        const nm = f.name || "";
+        if (isImageExt(nm)) return "render";
+        if (isDwgExt(nm)) return "drawing";
+        return "brief";
+      };
+
+      // 4. Завантажуємо файли в слоти
+      let counts = { render: 0, brief: 0, reference: 0, drawing: 0, skip: 0 };
+      for (let i = 0; i < allFiles.length; i++) {
+        const f = allFiles[i];
+        const cat = categories[i] || getCategoryFallback(f);
+        if (cat === "skip") { counts.skip++; continue; }
+        const rawUrl = f.file || f.url || f.file_url || f.original_url || f.download_url;
+        if (!rawUrl) continue;
+        const url = proxyUrl(rawUrl);
+        const name = f.name || f.filename || "file";
+        const ct = f.content_type || f.mime_type || "";
+        setArchivizerStatus({ loading: true, msg: `[${cat}] ${name}` });
+        try {
+          const blob = await fetch(url).then(r => r.blob());
+          const file = new File([blob], name, { type: blob.type || ct });
+          if (cat === "render") { renders.add(file); counts.render++; }
+          else if (cat === "reference") { refs.add(file); counts.reference++; }
+          else if (cat === "drawing") { draws.add(file); counts.drawing++; }
+          else { briefs.add(file); counts.brief++; }
+        } catch(e) { console.error(`Failed to download [${cat}] ${name}:`, e); }
+      }
+
+      const summary = [
+        counts.render && `${counts.render} рендерів`,
+        counts.brief && `${counts.brief} брифів`,
+        counts.reference && `${counts.reference} референсів`,
+        counts.drawing && `${counts.drawing} креслень`,
+        counts.skip && `${counts.skip} пропущено`,
+      ].filter(Boolean).join(", ");
+      setArchivizerStatus({ ok: `Завантажено: ${summary}` });
+    } catch (e) {
+      setArchivizerStatus({ error: `Помилка: ${e.message}` });
+    }
+  }
+
+
+  function reset() {
+    setStep(1); setSel(null); setErr(""); setBriefText("");
+    renders.ref.current = []; briefs.ref.current = []; refs.ref.current = []; draws.ref.current = [];
+    revBriefs.ref.current = []; revRefs.ref.current = []; revDraws.ref.current = [];
+    pairBefores.current = {}; pairAfters.current = {};
+    setPairs([{ id: 1, comment: "" }]); setPerData([]); setStatuses([]); setGlobalSum("");
+  }
+
+  const isRev = mode === "revision";
+  const vPairs = pairs.filter(p => {
+    const b = getPF(p.id, "before").filter(f => !f._loading && !f._error && (f.pages?.some(pg => pg.b64) || f.type === "excel"));
+    const a = getPF(p.id, "after").filter(f => !f._loading && !f._error && (f.pages?.some(pg => pg.b64) || f.type === "excel"));
+    return b.length > 0 && a.length > 0;
+  });
+  const rImages = readyFiles(renders).filter(f => f.pages?.some(p => p.b64));
+  const gridItems = isRev ? vPairs.map(p => ({ befores: getPF(p.id, "before").filter(f => !f._loading && !f._error), afters: getPF(p.id, "after").filter(f => !f._loading && !f._error) })) : rImages;
+  const getDP = (i) => {
+    if (isRev) { const p = vPairs[i]; return { renderFiles: getPF(p.id, "after").filter(f => !f._loading && !f._error), beforeFiles: getPF(p.id, "before").filter(f => !f._loading && !f._error), drawings: revDraws.files }; }
+    return { renderFiles: [rImages[i]], beforeFiles: [], drawings: draws.files };
+  };
+  const detailProps = sel !== null && sel < gridItems.length ? getDP(sel) : null;
+
+  return (
+    <div className="qa-bg" style={{ minHeight: "100vh", fontFamily: "Georgia, serif" }}>
+      <div style={{ background: "#1a1a1a", color: "#f2f0ec", padding: "12px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 100 }}>
+        <div>
+          <div style={{ fontSize: 10, letterSpacing: "0.2em", color: "#555", fontFamily: "monospace" }}>RENDER QA</div>
+          <div style={{ fontSize: 16, fontWeight: 400, letterSpacing: "0.05em" }}>Перевірка рендерів</div>
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          {step === 2 && sel !== null && <button onClick={() => setSel(null)} style={{ background: "transparent", border: "1px solid #444", color: "#aaa", padding: "5px 12px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 4 }}>← {isRev ? "Раунди" : "Ракурси"}</button>}
+          {step === 2 && <button onClick={reset} style={{ background: "transparent", border: "1px solid #444", color: "#aaa", padding: "5px 12px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 4 }}>← Нова перевірка</button>}
+          <input
+            type="password"
+            value={anthropicKey}
+            onChange={e => saveAnthropicKey(e.target.value)}
+            placeholder="Anthropic API key"
+            style={{ background: "#111", border: `1px solid ${anthropicKey ? "#27ae60" : "#555"}`, color: "#aaa", padding: "5px 10px", fontSize: 11, fontFamily: "monospace", borderRadius: 4, width: 180, outline: "none" }}
+          />
+        </div>
+      </div>
+
+      {step === 1 && (
+        <div style={{ maxWidth: "100%", width: "100%", padding: "22px 24px", display: "flex", flexDirection: "column", gap: 16, boxSizing: "border-box" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            {[{ id: "first", icon: "🎯", label: "Перший результат", desc: "Рендер vs ТЗ, референси, специфікація" }, { id: "revision", icon: "🔄", label: "Порівняння раундів", desc: "ДО vs ПІСЛЯ — чи внесені правки" }].map(m => (
+              <div key={m.id} onClick={() => { setMode(m.id); setErr(""); }} style={{ background: mode === m.id ? "#1a1a1a" : "#fff", color: mode === m.id ? "#f2f0ec" : "#444", border: `2px solid ${mode === m.id ? "#1a1a1a" : "#e0ddd8"}`, borderRadius: 10, padding: "14px 16px", cursor: "pointer", transition: "all 0.15s" }}>
+                <div style={{ fontSize: 20, marginBottom: 4 }}>{m.icon}</div>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{m.label}</div>
+                <div style={{ fontSize: 10, opacity: 0.5, fontFamily: "monospace" }}>{m.desc}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+            {QA_CHECKS.map(q => <div key={q.id} style={{ display: "flex", alignItems: "center", gap: 4, background: "#fff", border: `1px solid ${q.color}33`, borderLeft: `3px solid ${q.color}`, borderRadius: "0 5px 5px 0", padding: "3px 8px" }}><span style={{ fontSize: 9, fontWeight: "bold", color: q.color, fontFamily: "monospace" }}>#{q.id}</span><span style={{ fontSize: 10, color: "#555", fontFamily: "monospace" }}>{q.label}</span></div>)}
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {Object.entries(STANDARDS).map(([k, v]) => <div key={k} style={{ flex: 1, minWidth: 140, background: v.bg, border: `1px solid ${v.color}44`, borderLeft: `4px solid ${v.color}`, borderRadius: "0 8px 8px 0", padding: "7px 11px" }}><div style={{ fontSize: 13, fontWeight: 700, color: v.color, fontFamily: "monospace", marginBottom: 2 }}>{k}</div><div style={{ fontSize: 10, color: "#666", fontFamily: "monospace" }}>{v.desc}</div></div>)}
+          </div>
+          <div style={{ height: 1, background: "#ddd" }} />
+          {!isRev && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div style={{ background: "#0d1a2b", border: "1px solid #2980b944", borderRadius: 10, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ fontSize: 10, letterSpacing: "0.14em", color: "#2980b9", fontFamily: "monospace", marginBottom: 4 }}>ARCHIVIZER</div>
+                <input type="password" value={archivizerToken} onChange={e => saveArchivizerToken(e.target.value)} placeholder="API токен" style={{ width: "100%", background: "#111", border: `1px solid ${archivizerToken ? "#27ae60" : "#333"}`, color: "#aaa", padding: "6px 10px", fontSize: 11, fontFamily: "monospace", borderRadius: 4, outline: "none", boxSizing: "border-box", marginBottom: 6 }} />
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input type="text" value={archivizerUrl} onChange={e => setArchivizerUrl(e.target.value)} onKeyDown={e => e.key === "Enter" && loadFromArchivizer()} placeholder="https://archivizer.com/tasks/WF8PSTKA" style={{ flex: 1, background: "#111", border: "1px solid #333", color: "#aaa", padding: "6px 10px", fontSize: 11, fontFamily: "monospace", borderRadius: 4, outline: "none" }} />
+                  <button onClick={loadFromArchivizer} disabled={archivizerStatus?.loading} style={{ background: archivizerStatus?.loading ? "#333" : "#2980b9", border: "none", color: "#fff", borderRadius: 4, padding: "6px 16px", cursor: archivizerStatus?.loading ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "monospace", whiteSpace: "nowrap" }}>
+                    {archivizerStatus?.loading ? "Завантаження..." : "Завантажити"}
+                  </button>
+                </div>
+                {archivizerStatus && <div style={{ fontSize: 10, fontFamily: "monospace", color: archivizerStatus.error ? "#e74c3c" : archivizerStatus.ok ? "#27ae60" : "#aaa" }}>{archivizerStatus.error || archivizerStatus.ok || archivizerStatus.msg}</div>}
+              </div>
+              <UploadBox label="РЕНДЕРИ" files={renders.files} onAdd={renders.add} onAddDone={renders.addDone} onRemove={renders.remove} color="#1a1a1a" />
+              <div>
+                <div style={{ fontSize: 10, letterSpacing: "0.14em", color: "#888", marginBottom: 5, fontFamily: "monospace" }}>ТЗ — ТЕКСТ</div>
+                <textarea value={briefText} onChange={e => setBriefText(e.target.value)} placeholder={"• Інтер'єр вітальні у скандинавському стилі\n• Або залиште порожнім — ТЗ у файлах нижче"} style={{ width: "100%", minHeight: 80, padding: "10px 12px", border: "1px solid #ddd", borderRadius: 8, background: "#fff", fontSize: 13, lineHeight: 1.7, fontFamily: "monospace", resize: "vertical", color: "#333", outline: "none", boxSizing: "border-box" }} />
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+                <UploadBox label="БРИФИ" note="PDF, зобр., Excel/CSV" files={briefs.files} onAdd={briefs.add} onAddDone={briefs.addDone} onRemove={briefs.remove} color="#e74c3c" />
+                <UploadBox label="РЕФЕРЕНСИ" note="Зображення" files={refs.files} onAdd={refs.add} onAddDone={refs.addDone} onRemove={refs.remove} color="#e67e22" />
+                <DwgSlot
+                  files={draws.files}
+                  onAddDwg={draws.add}
+                  onRemove={draws.remove}
+                  onConverted={(dwgFile, dxfText) => handleDwgConverted(draws, dwgFile, dxfText)}
+                />
+              </div>
+              <div style={{ background: "#f0faf4", border: "1px solid #27ae6033", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "#555", fontFamily: "monospace" }}>
+                💡 Excel/CSV з переліком матеріалів — Claude перевірить відповідність кожного на рендері
+              </div>
+            </div>
+          )}
+          {isRev && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {pairs.map((pair, pi) => (
+                <div key={pair.id} style={{ background: "#fff", border: "1px solid #e8e6e1", borderRadius: 12, padding: 14 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                    <div style={{ fontSize: 11, fontFamily: "monospace", fontWeight: 600, color: "#555" }}>РАУНД {pi + 1}</div>
+                    {pairs.length > 1 && <button onClick={() => setPairs(p => p.filter((_, j) => j !== pi))} style={{ background: "none", border: "1px solid #ddd", color: "#bbb", borderRadius: 5, cursor: "pointer", fontSize: 10, padding: "2px 8px", fontFamily: "monospace" }}>видалити</button>}
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+                    <UploadBox label="ДО" files={getPF(pair.id, "before")} onAdd={f => addPF(pair.id, "before", f)} onRemove={i => removePF(pair.id, "before", i)} color="#888" onAddDone={f => { const id = "f"+Date.now()+"_"+Math.random().toString(36).slice(2); pairBefores.current[pair.id]=[...(pairBefores.current[pair.id]||[]),{...f,_id:id}]; bumpPairs(); }} />
+                    <UploadBox label="ПІСЛЯ" files={getPF(pair.id, "after")} onAdd={f => addPF(pair.id, "after", f)} onRemove={i => removePF(pair.id, "after", i)} color="#27ae60" onAddDone={f => { const id = "f"+Date.now()+"_"+Math.random().toString(36).slice(2); pairAfters.current[pair.id]=[...(pairAfters.current[pair.id]||[]),{...f,_id:id}]; bumpPairs(); }} />
+                  </div>
+                  <textarea value={pair.comment} onChange={e => setPairs(p => p.map((x, j) => j === pi ? { ...x, comment: e.target.value } : x))} placeholder="• Правки до цього раунду (опціонально)" style={{ width: "100%", minHeight: 65, padding: "9px 11px", border: "1px solid #ddd", borderRadius: 8, background: "#fafafa", fontSize: 13, lineHeight: 1.7, fontFamily: "monospace", resize: "vertical", color: "#333", outline: "none", boxSizing: "border-box" }} />
+                </div>
+              ))}
+              <button onClick={() => setPairs(p => [...p, { id: Date.now(), comment: "" }])} style={{ background: "transparent", border: "2px dashed #ddd", color: "#aaa", padding: "11px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 10 }}>+ додати раунд</button>
+              <div style={{ height: 1, background: "#ddd" }} />
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+                <UploadBox label="БРИФИ" note="PDF, Excel/CSV" files={revBriefs.files} onAdd={revBriefs.add} onAddDone={revBriefs.addDone} onRemove={revBriefs.remove} color="#e74c3c" />
+                <UploadBox label="РЕФЕРЕНСИ" files={revRefs.files} onAdd={revRefs.add} onAddDone={revRefs.addDone} onRemove={revRefs.remove} color="#e67e22" />
+                <DwgSlot
+                  files={revDraws.files}
+                  onAddDwg={revDraws.add}
+                  onRemove={revDraws.remove}
+                  onConverted={(dwgFile, dxfText) => handleDwgConverted(revDraws, dwgFile, dxfText)}
+                />
+              </div>
+            </div>
+          )}
+          {err && <div style={{ color: "#e74c3c", fontSize: 12, fontFamily: "monospace", padding: "10px 13px", background: "#fff5f5", borderRadius: 6, border: "1px solid #fcc" }}>{err}</div>}
+          <button onClick={runAnalysis} style={{ background: "#1a1a1a", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: "pointer", borderRadius: 8 }}>
+            {isRev ? "ПОРІВНЯТИ РАУНДИ →" : "ПЕРЕВІРИТИ РЕНДЕРИ →"}
+          </button>
+        </div>
+      )}
+
+      {step === 2 && sel === null && <Grid items={gridItems} perData={perData} statuses={statuses} globalSummary={globalSum} onSelect={setSel} onRetry={mode === "first" ? retryFailed : undefined} mode={mode} />}
+      {step === 2 && sel !== null && detailProps && (
+        <DetailPage
+          renderFiles={detailProps.renderFiles}
+          beforeFiles={detailProps.beforeFiles}
+          data={perData[sel]}
+          drawings={detailProps.drawings}
+          num={sel + 1}
+          total={isRev ? vPairs.length : rImages.length}
+          status={statuses[sel] || null}
+          apiError={perData[sel]?.error || null}
+          onBack={() => setSel(null)}
+          mode={mode}
+          onReview={async (excluded) => {
+            const ri = sel;
+            const rImages = readyFiles(renders).filter(f => f.pages?.some(p => p.b64));
+            const render = rImages[ri]; if (!render) return;
+            const newStatuses = [...statuses]; newStatuses[ri] = "Аналізую…"; setStatuses([...newStatuses]);
+            const drawsList = readyFiles(draws);
+            const briefsList = readyFiles(briefs);
+            const mn = matNote([...briefsList, ...drawsList]);
+            const excNote = excluded.length > 0
+              ? `\n\nІГНОРУЙ ЦІ ПУНКТИ — відмічені як нерелевантні для даного ракурсу:\n${excluded.map((e, i) => `${i+1}. [${e.type}] ${e.text}`).join("\n")}\nНЕ включай їх в items/corrections/defects та не знижуй оцінку через них.`
+              : "";
+            const tzLower = briefText.toLowerCase();
+            const isExterior = /екстер|exterior|фасад|facade|будинок|house|office|building/.test(tzLower);
+            const isInterior = !isExterior || /інтер|interior|кімнат|room|kitchen|living/.test(tzLower);
+            const drawCount = drawsList.filter(d => d.pages?.some(p => p.b64)).length;
+            const hasDwgText = drawsList.filter(d => (d.type==="dxf"||d.type==="dwg") && d.textContent).length > 0;
+            const blocks = [`── ТЕХНІЧНІ ДЕФЕКТИ ──\nQ1.1 Левітація, Q1.2 Перетин, Q1.3 Текстури, Q1.4 Аліасинг, Q1.5 Артефакти, Q1.6 Матеріали`];
+            if (drawCount > 0 || hasDwgText) blocks.push(`── КРЕСЛЕННЯ ──\n${BLUEPRINT_COMPARE_PROMPT}`);
+            if (briefText.trim() || briefsList.length > 0) blocks.push(`── БРИФ/МУДБОРД ──\nВідповідність кольорів, стилю, пори року, освітлення`);
+            blocks.push(`── РЕОСЕТТИНГ ──\n${isInterior ? "Розетки, сантехніка, " : "Номери машин, дороги, "}рослинність, штори, написи на техніці, BEK`);
+            const parts = [{ type: "text", text: `Ти — QA-спеціаліст 3D-візуалізації. Повторна перевірка ракурсу ${ri+1}.
+
+ТЗ: ${briefText.trim() || "(дивись матеріали)"}
+${mn}${excNote}
+
+${ZONE_PROMPT}
+
+${blocks.join("\n\n")}
+
+СТАНДАРТИ: ${QUAL_C}
+
+ВІДПОВІДАЙ ТІЛЬКИ JSON:
+${JSON_SCHEMA}` }];
+            (render.pages || []).filter(p => p.b64).forEach((pg, pi) => {
+              parts.push({ type: "text", text: `РЕНДЕР ${ri+1}${pi>0?` стор.${pi+1}`:""}:` });
+              parts.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: pg.b64 } });
+            });
+            parts.push(...filesToParts(briefsList, "БРИФ"));
+            parts.push(...filesToParts(readyFiles(refs), "РЕФЕРЕНС"));
+            parts.push(...filesToParts(drawsList, "КРЕСЛЕННЯ"));
+            try {
+              const p = await callAPI(parts, 2, anthropicKey);
+              const newData = [...perData];
+              newData[ri] = { items: p.items||[], corrections: p.corrections||[], defects: p.defects||[], materials: p.materials||[], quality: p.quality||null, summary: p.summary||"" };
+              setPerData(newData);
+            } catch(e) {
+              const newData = [...perData]; newData[ri] = { ...perData[ri], error: e.message }; setPerData(newData);
+            }
+            const ns = [...statuses]; ns[ri] = null; setStatuses(ns);
+          }}
+        />
+      )}
+
+      <style>{`
+        @keyframes spin{to{transform:rotate(360deg)}}
+        .qa-bg {
+          background-color: #f0ede8;
+          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='900' height='700'%3E%3Cdefs%3E%3Cstyle%3E.l%7Bstroke:%23b8a98a;stroke-width:0.5;fill:none;opacity:0.35%7D.t%7Bfill:%23a89070;font-family:monospace;opacity:0.25%7D.h%7Bstroke:%23c4b49a;stroke-width:0.3;fill:none;opacity:0.2%7D%3C/style%3E%3C/defs%3E%3C!-- Grid --\u003e%3Cline class='h' x1='0' y1='50' x2='900' y2='50'/%3E%3Cline class='h' x1='0' y1='100' x2='900' y2='100'/%3E%3Cline class='h' x1='0' y1='150' x2='900' y2='150'/%3E%3Cline class='h' x1='0' y1='200' x2='900' y2='200'/%3E%3Cline class='h' x1='0' y1='250' x2='900' y2='250'/%3E%3Cline class='h' x1='0' y1='300' x2='900' y2='300'/%3E%3Cline class='h' x1='0' y1='350' x2='900' y2='350'/%3E%3Cline class='h' x1='0' y1='400' x2='900' y2='400'/%3E%3Cline class='h' x1='0' y1='450' x2='900' y2='450'/%3E%3Cline class='h' x1='0' y1='500' x2='900' y2='500'/%3E%3Cline class='h' x1='0' y1='550' x2='900' y2='550'/%3E%3Cline class='h' x1='0' y1='600' x2='900' y2='600'/%3E%3Cline class='h' x1='0' y1='650' x2='900' y2='650'/%3E%3Cline class='h' x1='50' y1='0' x2='50' y2='700'/%3E%3Cline class='h' x1='100' y1='0' x2='100' y2='700'/%3E%3Cline class='h' x1='150' y1='0' x2='150' y2='700'/%3E%3Cline class='h' x1='200' y1='0' x2='200' y2='700'/%3E%3Cline class='h' x1='250' y1='0' x2='250' y2='700'/%3E%3Cline class='h' x1='300' y1='0' x2='300' y2='700'/%3E%3Cline class='h' x1='350' y1='0' x2='350' y2='700'/%3E%3Cline class='h' x1='400' y1='0' x2='400' y2='700'/%3E%3Cline class='h' x1='450' y1='0' x2='450' y2='700'/%3E%3Cline class='h' x1='500' y1='0' x2='500' y2='700'/%3E%3Cline class='h' x1='550' y1='0' x2='550' y2='700'/%3E%3Cline class='h' x1='600' y1='0' x2='600' y2='700'/%3E%3Cline class='h' x1='650' y1='0' x2='650' y2='700'/%3E%3Cline class='h' x1='700' y1='0' x2='700' y2='700'/%3E%3Cline class='h' x1='750' y1='0' x2='750' y2='700'/%3E%3Cline class='h' x1='800' y1='0' x2='800' y2='700'/%3E%3Cline class='h' x1='850' y1='0' x2='850' y2='700'/%3E%3C!-- Floor plan 1 --\u003e%3Crect class='l' x='40' y='60' width='180' height='140' stroke-width='1'/%3E%3Crect class='l' x='40' y='60' width='80' height='60'/%3E%3Crect class='l' x='120' y='60' width='100' height='60'/%3E%3Crect class='l' x='40' y='120' width='120' height='80'/%3E%3Crect class='l' x='160' y='120' width='60' height='80'/%3E%3Cline class='l' x1='80' y1='60' x2='80' y2='75' stroke-dasharray='4,2'/%3E%3Cline class='l' x1='40' y1='170' x2='60' y2='170' stroke-dasharray='4,2'/%3E%3Ctext class='t' x='55' y='95' font-size='6'%3ELIVING%3C/text%3E%3Ctext class='t' x='128' y='92' font-size='6'%3EKITCHEN%3C/text%3E%3Ctext class='t' x='68' y='155' font-size='6'%3EBEDROOM%3C/text%3E%3Ctext class='t' x='163' y='155' font-size='6'%3EBATH%3C/text%3E%3Cline class='l' x1='40' y1='200' x2='220' y2='200' stroke-dasharray='8,3'/%3E%3Ctext class='t' x='42' y='216' font-size='5'%3E3600mm%3C/text%3E%3Cline class='l' x1='220' y1='60' x2='236' y2='60'/%3E%3Cline class='l' x1='220' y1='200' x2='236' y2='200'/%3E%3Cline class='l' x1='228' y1='60' x2='228' y2='200'/%3E%3Ctext class='t' x='232' y='135' font-size='5'%3E4800%3C/text%3E%3C!-- Elevation facade --\u003e%3Crect class='l' x='310' y='80' width='220' height='130' stroke-width='1'/%3E%3Crect class='l' x='370' y='80' width='100' height='50'/%3E%3Crect class='l' x='340' y='160' width='40' height='50'/%3E%3Crect class='l' x='460' y='160' width='40' height='50'/%3E%3Cline class='l' x1='310' y1='210' x2='530' y2='210' stroke-width='1.2'/%3E%3Crect class='l' x='325' y='130' width='30' height='30'/%3E%3Crect class='l' x='490' y='130' width='30' height='30'/%3E%3Cpath class='l' d='M310 80 L420 40 L530 80' stroke-width='1'/%3E%3Cline class='l' x1='350' y1='210' x2='350' y2='220' stroke-dasharray='3,2'/%3E%3Ctext class='t' x='315' y='228' font-size='5'%3ESOUTH ELEVATION  1:100%3C/text%3E%3C!-- Interior sketch --\u003e%3Crect class='l' x='600' y='50' width='260' height='180' stroke-width='1'/%3E%3Cline class='l' x1='600' y1='230' x2='860' y2='230' stroke-width='1.2'/%3E%3Crect class='l' x='620' y='170' width='80' height='60'/%3E%3Crect class='l' x='620' y='170' width='80' height='20'/%3E%3Crect class='l' x='760' y='175' width='80' height='55'/%3E%3Crect class='l' x='640' y='60' width='60' height='50'/%3E%3Crect class='l' x='730' y='60' width='60' height='50'/%3E%3Crect class='l' x='820' y='60' width='30' height='50'/%3E%3Cpath class='l' d='M620 170 Q660 150 700 170'/%3E%3Cline class='l' x1='620' y1='230' x2='620' y2='60'/%3E%3Cline class='l' x1='860' y1='230' x2='860' y2='60'/%3E%3Ctext class='t' x='605' y='248' font-size='5'%3ELIVING ROOM — INTERIOR VIEW%3C/text%3E%3C!-- Dimension lines top --\u003e%3Cline class='l' x1='640' y1='45' x2='640' y2='55'/%3E%3Cline class='l' x1='700' y1='45' x2='700' y2='55'/%3E%3Cline class='l' x1='640' y1='50' x2='700' y2='50'/%3E%3Ctext class='t' x='655' y='44' font-size='5'%3E1500mm%3C/text%3E%3C!-- Floor plan 2 --\u003e%3Crect class='l' x='40' y='300' width='240' height='170' stroke-width='1'/%3E%3Crect class='l' x='40' y='300' width='240' height='60'/%3E%3Crect class='l' x='40' y='360' width='80' height='110'/%3E%3Crect class='l' x='120' y='360' width='80' height='55'/%3E%3Crect class='l' x='120' y='415' width='80' height='55'/%3E%3Crect class='l' x='200' y='360' width='80' height='110'/%3E%3Ctext class='t' x='130' y='335' font-size='6'%3EOPEN OFFICE%3C/text%3E%3Ctext class='t' x='48' y='420' font-size='6'%3ELOUNGE%3C/text%3E%3Ctext class='t' x='125' y='392' font-size='6'%3EMTG%3C/text%3E%3Ctext class='t' x='125' y='447' font-size='6'%3EMTG%3C/text%3E%3Ctext class='t' x='208' y='420' font-size='6'%3EPRIVATE%3C/text%3E%3Ccircle class='l' cx='100' cy='360' r='15' stroke-dasharray='5,3'/%3E%3Ccircle class='l' cx='200' cy='360' r='15' stroke-dasharray='5,3'/%3E%3C!-- Landscape plan --\u003e%3Crect class='l' x='310' y='290' width='200' height='150' stroke-width='1'/%3E%3Ccircle class='l' cx='360' cy='330' r='18'/%3E%3Ccircle class='l' cx='360' cy='330' r='10'/%3E%3Ccircle class='l' cx='460' cy='330' r='18'/%3E%3Ccircle class='l' cx='460' cy='330' r='10'/%3E%3Ccircle class='l' cx='360' cy='400' r='14'/%3E%3Ccircle class='l' cx='410' cy='400' r='20'/%3E%3Ccircle class='l' cx='460' cy='400' r='14'/%3E%3Crect class='l' x='330' y='350' width='150' height='30'/%3E%3Cpath class='l' d='M310 420 Q360 410 410 420 Q460 430 510 420'/%3E%3Ctext class='t' x='315' y='452' font-size='5'%3ELANDSCAPE PLAN  1:200%3C/text%3E%3C!-- Section cut --\u003e%3Crect class='l' x='570' y='290' width='300' height='150' stroke-width='1'/%3E%3Cline class='l' x1='570' y1='440' x2='870' y2='440' stroke-width='1.5'/%3E%3Cpath class='l' d='M570 380 L630 320 L690 380 L750 300 L810 380 L870 380' stroke-width='1'/%3E%3Crect class='l' x='590' y='380' width='40' height='60'/%3E%3Crect class='l' x='640' y='320' width='40' height='120'/%3E%3Crect class='l' x='700' y='360' width='40' height='80'/%3E%3Crect class='l' x='760' y='300' width='40' height='140'/%3E%3Crect class='l' x='810' y='380' width='40' height='60'/%3E%3Cline class='l' x1='570' y1='290' x2='570' y2='450' stroke-dasharray='6,3'/%3E%3Cline class='l' x1='870' y1='290' x2='870' y2='450' stroke-dasharray='6,3'/%3E%3Ctext class='t' x='575' y='460' font-size='5'%3ESECTION A-A  1:50%3C/text%3E%3C!-- Lighting plan --\u003e%3Crect class='l' x='40' y='510' width='200' height='150' stroke-width='1'/%3E%3Ccircle class='l' cx='90' cy='550' r='8' stroke-dasharray='3,2'/%3E%3Ccircle class='l' cx='140' cy='550' r='8' stroke-dasharray='3,2'/%3E%3Ccircle class='l' cx='190' cy='550' r='8' stroke-dasharray='3,2'/%3E%3Ccircle class='l' cx='90' cy='610' r='8' stroke-dasharray='3,2'/%3E%3Ccircle class='l' cx='190' cy='610' r='8' stroke-dasharray='3,2'/%3E%3Crect class='l' x='115' y='595' width='50' height='30'/%3E%3Cline class='l' x1='90' y1='550' x2='140' y2='550'/%3E%3Cline class='l' x1='140' y1='550' x2='190' y2='550'/%3E%3Cline class='l' x1='90' y1='550' x2='90' y2='610'/%3E%3Cline class='l' x1='190' y1='550' x2='190' y2='610'/%3E%3Ctext class='t' x='55' y='502' font-size='5'%3EELECTRICAL%2FLIGHT PLAN%3C/text%3E%3C!-- Tile layout --\u003e%3Crect class='l' x='300' y='510' width='160' height='140'/%3E%3Cline class='l' x1='300' y1='545' x2='460' y2='545'/%3E%3Cline class='l' x1='300' y1='580' x2='460' y2='580'/%3E%3Cline class='l' x1='300' y1='615' x2='460' y2='615'/%3E%3Cline class='l' x1='300' y1='650' x2='460' y2='650'/%3E%3Cline class='l' x1='335' y1='510' x2='335' y2='650'/%3E%3Cline class='l' x1='370' y1='510' x2='370' y2='650'/%3E%3Cline class='l' x1='405' y1='510' x2='405' y2='650'/%3E%3Cline class='l' x1='440' y1='510' x2='440' y2='650'/%3E%3Cline class='l' x1='317' y1='527' x2='317' y2='650' stroke-dasharray='2,2'/%3E%3Cline class='l' x1='352' y1='510' x2='352' y2='650' stroke-dasharray='2,2'/%3E%3Ctext class='t' x='305' y='506' font-size='5'%3ETILE LAYOUT 600x600%3C/text%3E%3C!-- Exterior sketch --\u003e%3Crect class='l' x='510' y='510' width='360' height='170' stroke-width='1'/%3E%3Cpath class='l' d='M510 630 L870 630' stroke-width='1.2'/%3E%3Crect class='l' x='540' y='530' width='80' height='100'/%3E%3Crect class='l' x='640' y='510' width='120' height='120'/%3E%3Crect class='l' x='770' y='545' width='80' height='85'/%3E%3Crect class='l' x='555' y='560' width='25' height='70'/%3E%3Crect class='l' x='590' y='560' width='25' height='70'/%3E%3Crect class='l' x='655' y='520' width='40' height='50'/%3E%3Crect class='l' x='710' y='520' width='40' height='50'/%3E%3Cpath class='l' d='M640 510 L700 480 L760 510'/%3E%3Ccircle class='l' cx='540' cy='625' r='20'/%3E%3Ccircle class='l' cx='850' cy='625' r='15'/%3E%3Ctext class='t' x='515' y='695' font-size='5'%3ENORTH FACADE — COMMERCIAL  1:150%3C/text%3E%3C/svg%3E");
+          background-repeat: repeat;
+          background-size: 900px 700px;
+        }
+      `}</style>
+    </div>
+  );
+}
