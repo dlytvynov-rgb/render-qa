@@ -496,7 +496,7 @@ const BLUEPRINT_COMPARE_PROMPT = `═══ ПОРІВНЯННЯ З КРЕСЛЕ
 Elevations (фасади/висоти), Floorplan (розташування меблів/стін), Lighting plan (розташування світильників/розеток), лейаут меблів, вікна/двері/ручки/плінтуси/карнизи, напрямок текстур/матеріалів, розкладка плитки/підлог, вентканали, водостоки (Gutter), гребінь/коник даху, цегла/сайдинг, відповідність ландшафтному плану.
 Для кожної невідповідності — вкажи точну зону на рендері.`;
 
-const JSON_SCHEMA = `{"items":[{"id":"tz1","comment":"Текстура підлоги — паркет дуб","status":"not_fixed","note":"Видно тайлінг патерну","zone":{"x":20,"y":60,"w":18,"h":14}},{"id":"tz2","comment":"Пора року — літо","status":"fixed","note":"Зелена рослинність відповідає","zone":{"x":35,"y":15,"w":22,"h":18}}],"corrections":[{"id":"c1","title":"Виправити тіні під диваном","description":"Відсутні контактні тіні","priority":"high","zone":{"x":18,"y":68,"w":24,"h":8}}],"defects":[{"id":"d1","title":"Левітація ніжки стільця","description":"Передня ліва ніжка не торкається підлоги","severity":"high","qa_tag":"Q1.1","zone":{"x":44,"y":71,"w":4,"h":6}},{"id":"d2","title":"Неправильний напис на банері","description":"Lorem Ipsum замість реального тексту","severity":"medium","qa_tag":"Q3.2","zone":{"x":60,"y":20,"w":18,"h":8}},{"id":"d3","title":"Відсутні розетки","description":"На стінах немає розеток — геосеттинг","severity":"low","qa_tag":"Q3.1","zone":{"x":10,"y":55,"w":5,"h":6}},{"id":"d4","title":"Меблі не на місці по плану","description":"Диван зміщений відносно floorplan","severity":"high","qa_tag":"Q2.1","zone":{"x":25,"y":50,"w":30,"h":25}}],"materials":[{"id":"m1","name":"Паркет дуб натуральний","group":"Підлога","spec":"180×1200мм","status":"match","note":"Відповідає ТЗ","expected":"180x1200 натуральний дуб","zone":{"x":15,"y":65,"w":22,"h":18}}],"quality":{"standard":"MLR","score":65,"summary":"Рендер загалом якісний, але є проблеми з геосеттингом та написами","criteria":[{"name":"Геометрія та фізика","score":55},{"name":"Матеріали та текстури","score":60},{"name":"Відповідність кресленням","score":70},{"name":"Геосеттинг та деталі","score":50},{"name":"Відповідність брифу","score":75}],"upgradeTips":["Додати розетки на стінах","Виправити написи на банерах","Перевірити розташування меблів по floorplan"]},"summary":"MLR рівень, основні проблеми: геосеттинг та написи","globalSummary":""}`;
+const JSON_SCHEMA = `{"tz_parsed":[{"category":"Матеріали","items":["Диван — червоний велюр","Підлога — паркет дуб 180×1200мм","Стіни — штукатурка теплий беж"]},{"category":"Сезон / атмосфера","items":["Літо, яскраве денне освітлення"]},{"category":"Меблі та моделі","items":["Стілець Eames білий","Стіл скляний 120×80см"]},{"category":"Креслення","items":["Планування 4×6м, вікно зліва, вхід справа"]},{"category":"Логотип / написи","items":["Логотип XYZ на стіні праворуч"]},{"category":"Вимоги клієнта","items":["Формат TIFF 300dpi"]}],"checks":[{"id":"Q1.1","status":"ok","group":"technical","note":"Всі меблі стоять на поверхні, контактні тіні присутні"},{"id":"Q1.2","status":"fail","group":"technical","note":"Диван перетинає ліву стіну в нижній частині"},{"id":"Q1.3","status":"ok","group":"technical","note":"Тайлінг не виявлено, масштаб текстур коректний"},{"id":"Q1.4","status":"ok","group":"technical","note":"Краї рівні, аліасинг відсутній"},{"id":"Q1.5","status":"warn","group":"technical","note":"Незначні fireflies у верхньому правому куті стелі"},{"id":"Q1.6","status":"ok","group":"technical","note":"IOR матеріалів коректний, roughness відповідає"},{"id":"Q2.1","status":"skipped","group":"tz","note":"Креслення не надані"},{"id":"Q2.2","status":"fail","group":"tz","note":"Колір дивану: має бути червоний велюр — присутній синій"},{"id":"Q2.2b","status":"warn","group":"materials","note":"Відтінок беж стіни недостатньо теплий порівняно з референсом"},{"id":"Q2.3","status":"ok","group":"tz","note":"Модель стільця відповідає запиту клієнта"},{"id":"Q3.1","status":"warn","group":"geosetting","note":"Відсутні розетки на стінах — геосеттинг неповний"},{"id":"Q3.2","status":"ok","group":"geosetting","note":"Написи та логотипи коректні"},{"id":"Q4.1","status":"skipped","group":"client","note":"Специфічних технічних вимог клієнта не зазначено"}],"items":[{"id":"tz1","comment":"Текстура підлоги — паркет дуб","status":"not_fixed","note":"Видно тайлінг патерну","zone":{"x":20,"y":60,"w":18,"h":14}},{"id":"tz2","comment":"Пора року — літо","status":"fixed","note":"Зелена рослинність відповідає","zone":{"x":35,"y":15,"w":22,"h":18}}],"corrections":[{"id":"c1","title":"Виправити тіні під диваном","description":"Відсутні контактні тіні","priority":"high","zone":{"x":18,"y":68,"w":24,"h":8}}],"defects":[{"id":"d1","title":"Левітація ніжки стільця","description":"Передня ліва ніжка не торкається підлоги","severity":"high","qa_tag":"Q1.1","zone":{"x":44,"y":71,"w":4,"h":6}},{"id":"d2","title":"Неправильний напис на банері","description":"Lorem Ipsum замість реального тексту","severity":"medium","qa_tag":"Q3.2","zone":{"x":60,"y":20,"w":18,"h":8}},{"id":"d3","title":"Відсутні розетки","description":"На стінах немає розеток — геосеттинг","severity":"low","qa_tag":"Q3.1","zone":{"x":10,"y":55,"w":5,"h":6}},{"id":"d4","title":"Меблі не на місці по плану","description":"Диван зміщений відносно floorplan","severity":"high","qa_tag":"Q2.1","zone":{"x":25,"y":50,"w":30,"h":25}}],"materials":[{"id":"m1","name":"Паркет дуб натуральний","group":"Підлога","spec":"180×1200мм","status":"match","note":"Відповідає ТЗ","expected":"180x1200 натуральний дуб","zone":{"x":15,"y":65,"w":22,"h":18}}],"quality":{"standard":"MLR","score":65,"summary":"Рендер загалом якісний, але є проблеми з геосеттингом та написами","criteria":[{"name":"Геометрія та фізика","score":55},{"name":"Матеріали та текстури","score":60},{"name":"Відповідність кресленням","score":70},{"name":"Геосеттинг та деталі","score":50},{"name":"Відповідність брифу","score":75}],"upgradeTips":["Додати розетки на стінах","Виправити написи на банерах","Перевірити розташування меблів по floorplan"]},"summary":"MLR рівень, основні проблеми: геосеттинг та написи","globalSummary":""}`;
 
 // ─── Canvas annotations ───────────────────────────────────────────────────────
 function useAnnotatedCanvas(imgRef, anns, visibleIds, hovId) {
@@ -1067,10 +1067,12 @@ function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, stat
   const corr = data?.corrections || [];
   const defects = data?.defects || [];
   const materials = data?.materials || [];
+  const checks = data?.checks || [];
+  const tz_parsed = data?.tz_parsed || [];
   const quality = data?.quality;
   const isRev = mode === "revision";
 
-  const [tab, setTab] = useState(() => items.length > 0 ? "tz" : "overview");
+  const [tab, setTab] = useState(() => checks.length > 0 ? "report" : items.length > 0 ? "tz" : "overview");
 
   const toggleIrrelevant = (key) => {
     setIrrelevant(prev => {
@@ -1153,6 +1155,8 @@ function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, stat
   const critCount = defects.filter(d => d.severity === "high").length;
 
   const tabs1 = [
+    checks.length > 0 && { id: "report", label: "Звіт" },
+    tz_parsed.length > 0 && { id: "tz_parsed", label: "ТЗ розбір" },
     { id: "overview", label: "Заключення" },
     items.length > 0 && { id: "tz", label: `ТЗ (${items.length})` },
     corr.length > 0 && { id: "corr", label: `Правки (${corr.length})` },
@@ -1269,6 +1273,102 @@ function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, stat
 
                 {/* Tab content */}
                 <div style={{ overflowY: "auto", maxHeight: "calc(100vh - 200px)" }}>
+
+                  {/* ТЗ РОЗБІР */}
+                  {tab === "tz_parsed" && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+                      <div style={{ padding: "10px 16px", background: "#faf9f7", borderBottom: "1px solid #f0eeea" }}>
+                        <div style={{ fontSize: 10, color: "#aaa", fontFamily: "monospace" }}>Що Claude зрозуміла з ТЗ / брифу / референсів / креслень</div>
+                      </div>
+                      {tz_parsed.map((grp, gi) => (
+                        <div key={gi} style={{ borderBottom: "1px solid #f0eeea" }}>
+                          <div style={{ padding: "8px 16px", background: "#f5f4f1" }}>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: "#555", fontFamily: "monospace" }}>{grp.category}</span>
+                          </div>
+                          {(grp.items || []).map((item, ii) => (
+                            <div key={ii} style={{ padding: "7px 16px 7px 28px", borderBottom: "1px solid #faf8f6", display: "flex", alignItems: "flex-start", gap: 8 }}>
+                              <span style={{ color: "#27ae60", fontSize: 10, marginTop: 2, flexShrink: 0 }}>•</span>
+                              <span style={{ fontSize: 11, color: "#444", lineHeight: 1.5 }}>{item}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* ЗВІТ */}
+                  {tab === "report" && (() => {
+                    const ALL_CHECKS = [
+                      { id: "Q1.1", group: "technical" }, { id: "Q1.2", group: "technical" },
+                      { id: "Q1.3", group: "technical" }, { id: "Q1.4", group: "technical" },
+                      { id: "Q1.5", group: "technical" }, { id: "Q1.6", group: "technical" },
+                      { id: "Q2.1", group: "tz" }, { id: "Q2.2", group: "tz" },
+                      { id: "Q2.3", group: "tz" },
+                      { id: "Q3.1", group: "geosetting" }, { id: "Q3.2", group: "geosetting" },
+                      { id: "Q4.1", group: "client" },
+                    ];
+                    // Мёрджим то что вернула Claude с дефолтными значениями
+                    const checksMap = {};
+                    checks.forEach(c => { checksMap[c.id] = c; });
+                    const fullChecks = ALL_CHECKS.map(def => checksMap[def.id] || { ...def, status: "skipped", note: "Не перевірено" });
+                    // Добавляем Q2.2b если есть
+                    if (checksMap["Q2.2b"]) fullChecks.splice(fullChecks.findIndex(c => c.id === "Q2.2") + 1, 0, checksMap["Q2.2b"]);
+                    const REPORT_GROUPS = [
+                      { id: "technical", label: "Технічні дефекти", icon: "🔧", ids: ["Q1.1","Q1.2","Q1.3","Q1.4","Q1.5","Q1.6"] },
+                      { id: "tz",        label: "Відповідність ТЗ", icon: "📋", ids: [] },
+                      { id: "materials", label: "Матеріали та світло", icon: "🎨", ids: [] },
+                      { id: "geosetting",label: "Геосеттинг",        icon: "🏙️", ids: ["Q3.1","Q3.2"] },
+                      { id: "client",    label: "Вимоги клієнта",    icon: "✅", ids: ["Q4.1"] },
+                    ];
+                    const ST = {
+                      ok:      { icon: "✅", color: "#27ae60", bg: "#f0faf5" },
+                      warn:    { icon: "⚠️", color: "#e67e22", bg: "#fff8f0" },
+                      fail:    { icon: "❌", color: "#e74c3c", bg: "#fff5f5" },
+                      skipped: { icon: "—",  color: "#bbb",    bg: "#fafafa" },
+                    };
+                    const grouped = {};
+                    fullChecks.forEach(c => {
+                      const g = c.group || "technical";
+                      if (!grouped[g]) grouped[g] = [];
+                      grouped[g].push(c);
+                    });
+                    return (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+                        {REPORT_GROUPS.map(grp => {
+                          const items2 = grouped[grp.id] || [];
+                          if (!items2.length) return null;
+                          const failCnt = items2.filter(c => c.status === "fail").length;
+                          const warnCnt = items2.filter(c => c.status === "warn").length;
+                          return (
+                            <div key={grp.id} style={{ borderBottom: "2px solid #f0eeea" }}>
+                              <div style={{ padding: "9px 16px", background: "#faf9f7", display: "flex", alignItems: "center", gap: 8 }}>
+                                <span style={{ fontSize: 13 }}>{grp.icon}</span>
+                                <span style={{ fontSize: 12, fontWeight: 700, color: "#333", fontFamily: "monospace", flex: 1 }}>{grp.label}</span>
+                                {failCnt > 0 && <span style={{ fontSize: 9, background: "#e74c3c", color: "#fff", padding: "1px 6px", borderRadius: 8, fontFamily: "monospace" }}>{failCnt} ❌</span>}
+                                {warnCnt > 0 && <span style={{ fontSize: 9, background: "#e67e22", color: "#fff", padding: "1px 6px", borderRadius: 8, fontFamily: "monospace" }}>{warnCnt} ⚠️</span>}
+                              </div>
+                              {items2.map((c, i) => {
+                                const st = ST[c.status] || ST.skipped;
+                                const qcfg = QA_CHECKS.find(q => q.id === c.id.replace(/[ab]$/, ""));
+                                return (
+                                  <div key={i} style={{ padding: "9px 16px", borderBottom: "1px solid #f5f3ef", background: st.bg, display: "flex", gap: 10, alignItems: "flex-start" }}>
+                                    <span style={{ fontSize: 14, lineHeight: 1, marginTop: 1, flexShrink: 0 }}>{st.icon}</span>
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                      <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 3, flexWrap: "wrap" }}>
+                                        <span style={{ fontSize: 9, fontFamily: "monospace", fontWeight: 700, color: qcfg?.color || st.color, background: (qcfg?.color || st.color) + "18", padding: "1px 5px", borderRadius: 3 }}>{c.id}</span>
+                                        {qcfg && <span style={{ fontSize: 11, fontWeight: 600, color: "#444" }}>{qcfg.label}</span>}
+                                      </div>
+                                      <div style={{ fontSize: 11, color: c.status === "skipped" ? "#bbb" : "#555", lineHeight: 1.5 }}>{c.note}</div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
 
                   {/* ЗАКЛЮЧЕННЯ */}
                   {tab === "overview" && (
@@ -1731,6 +1831,11 @@ ${revBlocks.join("\n\n")}
 - Перевіряй ТІЛЬКИ те що релевантне до цього раунду правок
 - zone завжди на зображенні ПІСЛЯ (не ДО)
 - Кожна проблема ОБОВ'ЯЗКОВО має zone
+- Заповни "tz_parsed" — вимоги з ТЗ/брифу що стосуються цього раунду правок (згрупуй по категоріях)
+- Заповни "checks" — по кожному Q-пункту що перевірявся в цьому раунді:
+  • status: "ok", "warn", "fail", "skipped"
+  • group: "technical" (Q1.x), "tz" (невідповідність типу по ТЗ/кресленнях), "materials" (нюанс кольору/відтінку), "geosetting" (Q3.x), "client" (Q4.x)
+  • note у форматі: "Еталон ([джерело]): [що має бути] → Знайдено: [що є] → [висновок]" або "Перевірено — зауважень немає"
 ${isLast ? "- Заповни globalSummary — підсумок всіх раундів." : '- globalSummary: ""'}
 
 ВІДПОВІДАЙ ТІЛЬКИ JSON:
@@ -1742,7 +1847,7 @@ ${JSON_SCHEMA}` }];
         parts.push(...filesToParts(readyFiles(revDraws), "КРЕСЛЕННЯ"));
         try {
           const p = await callAPI(parts, 2, anthropicKey);
-          results[ri] = { items: p.items || [], corrections: p.corrections || [], defects: p.defects || [], materials: p.materials || [], quality: p.quality || null, summary: p.summary || "" };
+          results[ri] = { tz_parsed: p.tz_parsed || [], checks: p.checks || [], items: p.items || [], corrections: p.corrections || [], defects: p.defects || [], materials: p.materials || [], quality: p.quality || null, summary: p.summary || "" };
           if (p.globalSummary) setGlobalSum(p.globalSummary);
         } catch (e) { results[ri] = { items: [], corrections: [], defects: [], materials: [], quality: null, error: e.message }; }
         setPerData([...results]);
@@ -1867,6 +1972,22 @@ ${QUAL_C}
 - Якщо блок не релевантний (наприклад креслень немає — не вигадуй невідповідності по кресленню)
 - Кожна проблема ОБОВ'ЯЗКОВО має zone з точними координатами
 - qa_tag: Q1.1-Q1.6 (технічні), Q2.1 (креслення), Q2.2 (бриф), Q2.3 (моделі), Q3.1 (геосеттинг), Q3.2 (написи), Q4.1 (client req)
+- Заповни "tz_parsed" — що ти зрозумів з ТЗ/брифу/референсів/креслень до перевірки рендеру:
+  • Згрупуй по категоріях: "Матеріали", "Меблі та моделі", "Сезон / атмосфера", "Креслення", "Логотип / написи", "Вимоги клієнта" та інші що є
+  • Кожен пункт — конкретна вимога з джерела: "Диван — червоний велюр (бриф)", "Вікно зліва (креслення)"
+  • Якщо якась категорія не має матеріалів — не включай її
+- Заповни "checks" — ОБОВ'ЯЗКОВО по кожному Q-пункту що перевірявся:
+  • id: Q1.1...Q4.1 (Q2.2 може мати два записи: Q2.2 для ТЗ і Q2.2b для матеріалів)
+  • status: "ok" (без зауважень), "warn" (незначне), "fail" (є проблема), "skipped" (матеріал не наданий або не застосовно)
+  • group: "technical" (Q1.x), "tz" (невідповідність типу/виду — неправильний колір, матеріал, меблі, чертёж), "materials" (нюанс — недостатньо насичений, не той відтінок), "geosetting" (Q3.x), "client" (Q4.x)
+  • note — ЗАВЖДИ у форматі:
+    - якщо є розбіжність: "Еталон ([джерело]): [що має бути] → Знайдено: [що є на рендері] → [висновок]"
+      де [джерело] = "бриф", "референс", "креслення", "ТЗ п.3" тощо
+      приклад: "Еталон (бриф): червоний велюр → Знайдено: синя тканина → ТЗ не виконано"
+      приклад: "Еталон (референс): теплий беж → Знайдено: холодний беж → нюанс кольору"
+    - якщо все ок: "Перевірено — зауважень немає" + коротко що саме перевірено
+    - якщо skipped: "Матеріал не наданий" або "Не застосовно до цього проекту"
+  • Важливо: Q2.x з group "tz" = неправильний ТИП (має бути червоний → є синій), group "materials" = нюанс відтінку (бежевий але недостатньо теплий)
 ${isLast ? "- Заповни globalSummary — загальна оцінка всього проекту." : '- globalSummary: ""'}
 
 ВІДПОВІДАЙ ТІЛЬКИ JSON:
@@ -1880,7 +2001,7 @@ ${JSON_SCHEMA}` }];
         parts.push(...filesToParts(drawsList, "КРЕСЛЕННЯ"));
         try {
           const p = await callAPI(parts, 2, anthropicKey);
-          results[ri] = { items: p.items || [], corrections: p.corrections || [], defects: p.defects || [], materials: p.materials || [], quality: p.quality || null, summary: p.summary || "" };
+          results[ri] = { tz_parsed: p.tz_parsed || [], checks: p.checks || [], items: p.items || [], corrections: p.corrections || [], defects: p.defects || [], materials: p.materials || [], quality: p.quality || null, summary: p.summary || "" };
           if (p.globalSummary) setGlobalSum(p.globalSummary);
         } catch (e) { results[ri] = { items: [], corrections: [], defects: [], materials: [], quality: null, error: e.message }; }
         setPerData([...results]);
@@ -2273,6 +2394,8 @@ ${blocks.join("\n\n")}
 
 СТАНДАРТИ: ${QUAL_C}
 
+- Заповни "checks" по кожному Q-пункту: status (ok/warn/fail/skipped), group (technical/tz/materials/geosetting/client), note.
+
 ВІДПОВІДАЙ ТІЛЬКИ JSON:
 ${JSON_SCHEMA}` }];
             (render.pages || []).filter(p => p.b64).forEach((pg, pi) => {
@@ -2285,7 +2408,7 @@ ${JSON_SCHEMA}` }];
             try {
               const p = await callAPI(parts, 2, anthropicKey);
               const newData = [...perData];
-              newData[ri] = { items: p.items||[], corrections: p.corrections||[], defects: p.defects||[], materials: p.materials||[], quality: p.quality||null, summary: p.summary||"" };
+              newData[ri] = { tz_parsed: p.tz_parsed||[], checks: p.checks||[], items: p.items||[], corrections: p.corrections||[], defects: p.defects||[], materials: p.materials||[], quality: p.quality||null, summary: p.summary||"" };
               setPerData(newData);
             } catch(e) {
               const newData = [...perData]; newData[ri] = { ...perData[ri], error: e.message }; setPerData(newData);
