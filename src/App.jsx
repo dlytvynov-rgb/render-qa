@@ -730,10 +730,8 @@ function DwgSlot({ files, onAddDwg, onRemove, onConverted }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-      <div style={{ fontSize: 10, letterSpacing: "0.14em", color: "#888", marginBottom: 5, fontFamily: "monospace" }}>
-        КРЕСЛЕННЯ
-        <span style={{ fontSize: 8, color: "#555", marginLeft: 8 }}>PDF · DXF · <span style={{ color: "#3498db" }}>DWG (читається автоматично)</span></span>
-      </div>
+      <div style={{ fontSize: 10, letterSpacing: "0.14em", color: "#888", marginBottom: 2, fontFamily: "monospace" }}>КРЕСЛЕННЯ</div>
+      <div style={{ fontSize: 9, color: "#bbb", fontFamily: "monospace", marginBottom: 5 }}>PDF · DXF · <span style={{ color: "#3498db" }}>DWG</span></div>
 
       {/* Зона завантаження */}
       <div
@@ -1958,7 +1956,6 @@ export default function App() {
   async function runAnalysis() {
     if (analysisRunningRef.current) return;
     analysisRunningRef.current = true;
-    try {
     const isRev = mode === "revision";
     if (isRev) {
       const vp = pairs.filter(p => {
@@ -1966,7 +1963,7 @@ export default function App() {
         const a = getPF(p.id, "after").filter(f => !f._loading && !f._error && (f.pages?.some(pg => pg.b64) || f.type === "excel"));
         return b.length > 0 && a.length > 0;
       });
-      if (!vp.length) { setErr("Завантажте хоча б одну пару ДО/ПІСЛЯ."); return; }
+      if (!vp.length) { setErr("Завантажте хоча б одну пару ДО/ПІСЛЯ."); analysisRunningRef.current = false; return; }
       setErr(""); setStep(2); setSel(null);
       const results = vp.map(() => null); setPerData([...results]);
       setStatuses(vp.map((_, i) => i === 0 ? "Аналізую…" : "У черзі…"));
@@ -2044,7 +2041,7 @@ ${JSON_SCHEMA}` }];
       }
     } else {
       const rImages = readyFiles(renders).filter(f => f.pages?.some(p => p.b64));
-      if (!rImages.length) { setErr("Завантажте хоча б один рендер."); return; }
+      if (!rImages.length) { setErr("Завантажте хоча б один рендер."); analysisRunningRef.current = false; return; }
       setErr(""); setStep(2); setSel(null);
       const results = rImages.map(() => null); setPerData([...results]);
       setStatuses(rImages.map((_, i) => i === 0 ? "Аналізую…" : "У черзі…"));
@@ -2290,9 +2287,8 @@ ${summaries}
         } catch (e) { setConsistency({ error: e.message }); }
         setConsistencyLoading(false);
       }
-    } finally {
-      analysisRunningRef.current = false;
     }
+    analysisRunningRef.current = false;
   }
 
   async function retryFailed() {
