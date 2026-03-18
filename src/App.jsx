@@ -1,5 +1,16 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 
+// ─── jsPDF ────────────────────────────────────────────────────────────────────
+async function loadJsPDF() {
+  if (window.jspdf) return window.jspdf.jsPDF;
+  await new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+    s.onload = res; s.onerror = rej; document.head.appendChild(s);
+  });
+  return window.jspdf.jsPDF;
+}
+
 // ─── SheetJS ──────────────────────────────────────────────────────────────────
 async function loadXLSX() {
   if (window.XLSX) return window.XLSX;
@@ -241,8 +252,25 @@ async function processFile(file, onProg, sig) {
       return { pages: [], type: "excel", filename: file.name, ext: nm.endsWith(".csv") ? "CSV" : "XLSX", textContent: text.slice(0, 12000) };
     } catch { onProg?.(100); return { pages: [], type: "excel", filename: file.name, ext: "XLSX", textContent: "[помилка читання]" }; }
   }
+  // RTF — strip control codes before passing to Claude
+  if (nm.endsWith(".rtf")) {
+    onProg?.(30);
+    try {
+      const raw = await file.text();
+      const text = raw
+        .replace(/\{\*\\[^{}]*\}/g, "")          // remove extended control groups {\* ...}
+        .replace(/\\bin\d+ ?/g, "")               // remove binary blobs
+        .replace(/\\'[0-9a-fA-F]{2}/g, "")        // remove hex-encoded chars
+        .replace(/\\[a-z]+[-]?\d* ?/g, "")        // remove control words like \rtf1 \ansi \pard
+        .replace(/[{}\\]/g, "")                    // remove remaining braces and backslashes
+        .replace(/\r?\n{3,}/g, "\n\n")             // collapse excessive blank lines
+        .trim();
+      onProg?.(100);
+      return { pages: [], type: "text", filename: file.name, ext: "RTF", textContent: (text || "[RTF порожній або не читається]").slice(0, 12000) };
+    } catch { onProg?.(100); return { pages: [], type: "text", filename: file.name, ext: "RTF", textContent: "[помилка читання RTF]" }; }
+  }
   // TXT/MD/text reading
-  if (nm.endsWith(".txt") || nm.endsWith(".md") || nm.endsWith(".rtf")) {
+  if (nm.endsWith(".txt") || nm.endsWith(".md")) {
     onProg?.(30);
     try {
       const text = await file.text();
@@ -318,12 +346,29 @@ function filesToParts(files, label) {
   });
   return parts;
 }
+function normalizeZone(z) {
+  if (!z || typeof z !== "object") return z;
+  const fix = v => {
+    const n = parseFloat(v);
+    if (isNaN(n)) return 0;
+    // якщо значення > 100 — скоріш за все пікселі, але без розміру зображення
+    // ділимо на 10 як евристика (типовий рендер ~1000px)
+    const pct = n > 100 ? n / 10 : n;
+    return Math.min(100, Math.max(0, Math.round(pct * 10) / 10));
+  };
+  return { x: fix(z.x), y: fix(z.y), w: fix(z.w), h: fix(z.h) };
+}
+function normalizeZones(data) {
+  if (!data) return data;
+  const fixArr = arr => (arr || []).map(item => item?.zone ? { ...item, zone: normalizeZone(item.zone) } : item);
+  return { ...data, items: fixArr(data.items), defects: fixArr(data.defects), corrections: fixArr(data.corrections) };
+}
 async function callAPI(parts, retries = 2, apiKey = "") {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const resp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true", "x-api-key": apiKey },
+        headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-beta": "prompt-caching-2024-07-31", "anthropic-dangerous-direct-browser-access": "true", "x-api-key": apiKey },
         body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 8000, messages: [{ role: "user", content: parts }] })
       });
       let data; try { data = await resp.json(); } catch { throw new Error(`HTTP ${resp.status}`); }
@@ -337,11 +382,12 @@ async function callAPI(parts, retries = 2, apiKey = "") {
       if (!raw.trim()) throw new Error("Порожня відповідь");
       const m = raw.match(/```json\s*([\s\S]*?)```/) || raw.match(/```\s*([\s\S]*?)```/) || raw.match(/(\{[\s\S]*\})/);
       if (!m) throw new Error("JSON не знайдено");
-      try { return JSON.parse(m[1]); } catch {
-        let p = m[1].trim();
-        const op = (p.match(/\{/g) || []).length, cl = (p.match(/\}/g) || []).length;
-        for (let i = 0; i < op - cl; i++) p += "}";
-        return JSON.parse(p);
+      try { return JSON.parse(m[1]); } catch (parseErr) {
+        if (attempt < retries) {
+          await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+          continue;
+        }
+        throw new Error(`JSON parse failed: ${parseErr.message}`);
       }
     } catch (e) {
       if (attempt === retries) throw e;
@@ -464,7 +510,8 @@ MLR (55-79%): фізично коректні матеріали, природн
 SDC (80-100%): кінематографічна композиція, бездоганна якість, всі деталі геосеттингу на місці, повна відповідність брифу і кресленням`;
 
 const ZONE_PROMPT = `═══ ТОЧНЕ ВИЗНАЧЕННЯ ЗОН — КРИТИЧНО ДЛЯ ЯКОСТІ ПЕРЕВІРКИ ═══
-Система координат: x=0 ліво, y=0 верх, одиниці = відсотки від розміру зображення.
+Система координат: x=0 ліво, y=0 верх, одиниці = ВІДСОТКИ (0.0–100.0) від розміру зображення.
+ЗАБОРОНЕНО пікселі (x:450, y:320) — тільки відсотки. Всі значення ОБОВ'ЯЗКОВО в діапазоні 0–100.
 
 КРОК 1 — Ідентифікація: назви КОНКРЕТНИЙ об'єкт ("ліва передня ніжка дивану", "шов між плиткою та плінтусом праворуч")
 КРОК 2 — Локалізація: визнач де він на зображенні (ліво/право/центр, верх/низ/середина)
@@ -496,7 +543,7 @@ const BLUEPRINT_COMPARE_PROMPT = `═══ ПОРІВНЯННЯ З КРЕСЛЕ
 Elevations (фасади/висоти), Floorplan (розташування меблів/стін), Lighting plan (розташування світильників/розеток), лейаут меблів, вікна/двері/ручки/плінтуси/карнизи, напрямок текстур/матеріалів, розкладка плитки/підлог, вентканали, водостоки (Gutter), гребінь/коник даху, цегла/сайдинг, відповідність ландшафтному плану.
 Для кожної невідповідності — вкажи точну зону на рендері.`;
 
-const JSON_SCHEMA = `{"tz_parsed":[{"category":"Матеріали","items":["Диван — червоний велюр","Підлога — паркет дуб 180×1200мм","Стіни — штукатурка теплий беж"]},{"category":"Сезон / атмосфера","items":["Літо, яскраве денне освітлення"]},{"category":"Меблі та моделі","items":["Стілець Eames білий","Стіл скляний 120×80см"]},{"category":"Креслення","items":["Планування 4×6м, вікно зліва, вхід справа"]},{"category":"Логотип / написи","items":["Логотип XYZ на стіні праворуч"]},{"category":"Вимоги клієнта","items":["Формат TIFF 300dpi"]}],"checks":[{"id":"Q1.1","status":"ok","group":"technical","note":"Всі меблі стоять на поверхні, контактні тіні присутні"},{"id":"Q1.2","status":"fail","group":"technical","note":"Диван перетинає ліву стіну в нижній частині"},{"id":"Q1.3","status":"ok","group":"technical","note":"Тайлінг не виявлено, масштаб текстур коректний"},{"id":"Q1.4","status":"ok","group":"technical","note":"Краї рівні, аліасинг відсутній"},{"id":"Q1.5","status":"warn","group":"technical","note":"Незначні fireflies у верхньому правому куті стелі"},{"id":"Q1.6","status":"ok","group":"technical","note":"IOR матеріалів коректний, roughness відповідає"},{"id":"Q2.1","status":"skipped","group":"tz","note":"Креслення не надані"},{"id":"Q2.2","status":"fail","group":"tz","note":"Колір дивану: має бути червоний велюр — присутній синій"},{"id":"Q2.2b","status":"warn","group":"materials","note":"Відтінок беж стіни недостатньо теплий порівняно з референсом"},{"id":"Q2.3","status":"ok","group":"tz","note":"Модель стільця відповідає запиту клієнта"},{"id":"Q3.1","status":"warn","group":"geosetting","note":"Відсутні розетки на стінах — геосеттинг неповний"},{"id":"Q3.2","status":"ok","group":"geosetting","note":"Написи та логотипи коректні"},{"id":"Q4.1","status":"skipped","group":"client","note":"Специфічних технічних вимог клієнта не зазначено"}],"items":[{"id":"tz1","comment":"Текстура підлоги — паркет дуб","status":"not_fixed","note":"Видно тайлінг патерну","zone":{"x":20,"y":60,"w":18,"h":14}},{"id":"tz2","comment":"Пора року — літо","status":"fixed","note":"Зелена рослинність відповідає","zone":{"x":35,"y":15,"w":22,"h":18}}],"corrections":[{"id":"c1","title":"Виправити тіні під диваном","description":"Відсутні контактні тіні","priority":"high","zone":{"x":18,"y":68,"w":24,"h":8}}],"defects":[{"id":"d1","title":"Левітація ніжки стільця","description":"Передня ліва ніжка не торкається підлоги","severity":"high","qa_tag":"Q1.1","zone":{"x":44,"y":71,"w":4,"h":6}},{"id":"d2","title":"Неправильний напис на банері","description":"Lorem Ipsum замість реального тексту","severity":"medium","qa_tag":"Q3.2","zone":{"x":60,"y":20,"w":18,"h":8}},{"id":"d3","title":"Відсутні розетки","description":"На стінах немає розеток — геосеттинг","severity":"low","qa_tag":"Q3.1","zone":{"x":10,"y":55,"w":5,"h":6}},{"id":"d4","title":"Меблі не на місці по плану","description":"Диван зміщений відносно floorplan","severity":"high","qa_tag":"Q2.1","zone":{"x":25,"y":50,"w":30,"h":25}}],"materials":[{"id":"m1","name":"Паркет дуб натуральний","group":"Підлога","spec":"180×1200мм","status":"match","note":"Відповідає ТЗ","expected":"180x1200 натуральний дуб","zone":{"x":15,"y":65,"w":22,"h":18}}],"quality":{"standard":"MLR","score":65,"summary":"Рендер загалом якісний, але є проблеми з геосеттингом та написами","criteria":[{"name":"Геометрія та фізика","score":55},{"name":"Матеріали та текстури","score":60},{"name":"Відповідність кресленням","score":70},{"name":"Геосеттинг та деталі","score":50},{"name":"Відповідність брифу","score":75}],"upgradeTips":["Додати розетки на стінах","Виправити написи на банерах","Перевірити розташування меблів по floorplan"]},"summary":"MLR рівень, основні проблеми: геосеттинг та написи","globalSummary":""}`;
+const JSON_SCHEMA = `{"tz_parsed":[{"category":"Матеріали","items":["Диван — червоний велюр","Підлога — паркет дуб 180×1200мм","Стіни — штукатурка теплий беж"]},{"category":"Сезон / атмосфера","items":["Літо, яскраве денне освітлення"]},{"category":"Меблі та моделі","items":["Стілець Eames білий","Стіл скляний 120×80см"]},{"category":"Креслення","items":["Планування 4×6м, вікно зліва, вхід справа"]},{"category":"Логотип / написи","items":["Логотип XYZ на стіні праворуч"]},{"category":"Вимоги клієнта","items":["Формат TIFF 300dpi"]}],"checks":[{"id":"Q1.1","status":"ok","group":"technical","note":"Всі меблі стоять на поверхні, контактні тіні присутні"},{"id":"Q1.2","status":"fail","group":"technical","note":"Диван перетинає ліву стіну в нижній частині"},{"id":"Q1.3","status":"ok","group":"technical","note":"Тайлінг не виявлено, масштаб текстур коректний"},{"id":"Q1.4","status":"ok","group":"technical","note":"Краї рівні, аліасинг відсутній"},{"id":"Q1.5","status":"warn","group":"technical","note":"Незначні fireflies у верхньому правому куті стелі"},{"id":"Q1.6","status":"ok","group":"technical","note":"IOR матеріалів коректний, roughness відповідає"},{"id":"Q2.1","status":"skipped","group":"tz","note":"Креслення не надані"},{"id":"Q2.2","status":"fail","group":"tz","note":"Колір дивану: має бути червоний велюр — присутній синій"},{"id":"Q2.2b","status":"warn","group":"materials","note":"Відтінок беж стіни недостатньо теплий порівняно з референсом"},{"id":"Q2.3","status":"ok","group":"tz","note":"Модель стільця відповідає запиту клієнта"},{"id":"Q3.1","status":"warn","group":"geosetting","note":"Відсутні розетки на стінах — геосеттинг неповний"},{"id":"Q3.2","status":"ok","group":"geosetting","note":"Написи та логотипи коректні"},{"id":"Q4.1","status":"skipped","group":"client","note":"Специфічних технічних вимог клієнта не зазначено"}],"items":[{"id":"tz1","comment":"Текстура підлоги — паркет дуб","status":"not_fixed","note":"Видно тайлінг патерну","zone":{"x":20,"y":60,"w":18,"h":14}},{"id":"tz2","comment":"Пора року — літо","status":"fixed","note":"Зелена рослинність відповідає","zone":{"x":35,"y":15,"w":22,"h":18}}],"corrections":[{"id":"c1","title":"Виправити тіні під диваном","description":"Відсутні контактні тіні","priority":"high","zone":{"x":18,"y":68,"w":24,"h":8}}],"defects":[{"id":"d1","title":"Левітація ніжки стільця","description":"Передня ліва ніжка не торкається підлоги","severity":"high","qa_tag":"Q1.1","zone":{"x":44,"y":71,"w":4,"h":6}},{"id":"d2","title":"Неправильний напис на банері","description":"Lorem Ipsum замість реального тексту","severity":"medium","qa_tag":"Q3.2","zone":{"x":60,"y":20,"w":18,"h":8}},{"id":"d3","title":"Відсутні розетки","description":"На стінах немає розеток — геосеттинг","severity":"low","qa_tag":"Q3.1","zone":{"x":10,"y":55,"w":5,"h":6}},{"id":"d4","title":"Меблі не на місці по плану","description":"Диван зміщений відносно floorplan","severity":"high","qa_tag":"Q2.1","zone":{"x":25,"y":50,"w":30,"h":25}}],"materials":[{"id":"m1","name":"Паркет дуб натуральний","group":"Підлога","spec":"180×1200мм","status":"match","note":"Відповідає ТЗ","expected":"180x1200 натуральний дуб","zone":{"x":15,"y":65,"w":22,"h":18}}],"quality":{"standard":"MLR","score":65,"tz_score":80,"tz_done":12,"tz_total":15,"summary":"Рендер загалом якісний, але є проблеми з геосеттингом та написами","criteria":[{"name":"Геометрія та фізика","score":55},{"name":"Матеріали та текстури","score":60},{"name":"Геосеттинг та деталі","score":50},{"name":"Художня якість","score":72}],"upgradeTips":["Додати розетки на стінах","Виправити написи на банерах"]},"summary":"MLR рівень, основні проблеми: геосеттинг та написи","globalSummary":""}`;
 
 // ─── Canvas annotations ───────────────────────────────────────────────────────
 function useAnnotatedCanvas(imgRef, anns, visibleIds, hovId) {
@@ -1106,7 +1153,7 @@ function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, stat
   ];
 
   useEffect(() => {
-    if (!data || visibleIds !== null) return;
+    if (!data) return;
     setVisibleIds(new Set(allAnns.map(a => `${a._src}:${a._srcIdx}`)));
   }, [data]); // eslint-disable-line
 
@@ -1540,6 +1587,120 @@ function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, stat
   );
 }
 
+// ─── TZ Review Step ───────────────────────────────────────────────────────────
+const CATEGORY_ICONS = {
+  "Матеріали та текстури": "🎨", "Меблі та моделі": "🛋️", "Сезон / атмосфера": "🌿",
+  "Тип освітлення": "💡", "Креслення та планування": "📐", "Логотип / написи": "🔤",
+  "Вимоги клієнта": "📋", "Специфічні запити": "⭐",
+};
+function TzReviewStep({ cards, onRemove, onEdit, onBack, onProceed, hasRenders, onGenerateAiRef, aiRefLoading, aiRefImage, aiRefErr, hasOpenaiKey, annotation }) {
+  const grouped = {};
+  cards.forEach(c => { if (!grouped[c.category]) grouped[c.category] = []; grouped[c.category].push(c); });
+  return (
+    <div style={{ maxWidth: 900, margin: "0 auto", padding: "22px 24px", display: "flex", flexDirection: "column", gap: 12 }}>
+      <div>
+        <div style={{ fontSize: 10, letterSpacing: "0.14em", color: "#888", fontFamily: "monospace", marginBottom: 4 }}>КРОК 2 — ПІДТВЕРДЖЕННЯ ТЗ</div>
+        <div style={{ fontSize: 16, fontWeight: 400, letterSpacing: "0.05em", color: "#1a1a1a", marginBottom: 4 }}>Перевір пункти ТЗ</div>
+        <div style={{ fontSize: 11, color: "#888", fontFamily: "monospace" }}>
+          Claude розпізнала <strong style={{ color: "#333" }}>{cards.length}</strong> пунктів ТЗ. Редагуй або видаляй — решта стануть чеклистом для перевірки рендеру.
+        </div>
+      </div>
+      {annotation && (
+        <div style={{ background: "#f8f7f4", border: "1px solid #e8e6e1", borderRadius: 10, padding: "12px 16px" }}>
+          <div style={{ fontSize: 9, fontWeight: 700, color: "#aaa", fontFamily: "monospace", letterSpacing: "0.1em", marginBottom: 6 }}>ОПИС ПРОЕКТУ</div>
+          <div style={{ fontSize: 12, color: "#444", lineHeight: 1.65 }}>{annotation}</div>
+        </div>
+      )}
+      {cards.length === 0 && (
+        <div style={{ background: "#fff9f0", border: "1px solid #e67e2244", borderRadius: 8, padding: "12px 16px", fontSize: 12, color: "#e67e22", fontFamily: "monospace" }}>
+          ⚠️ Пункти ТЗ не розпізнані — бриф порожній або не завантажений. Claude перевірить рендер самостійно.
+        </div>
+      )}
+      {Object.entries(grouped).map(([category, items]) => (
+        <div key={category} style={{ background: "#fff", border: "1px solid #e8e6e1", borderRadius: 10, overflow: "hidden" }}>
+          <div style={{ padding: "8px 14px", background: "#faf9f7", borderBottom: "1px solid #f0eeea", display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 14 }}>{CATEGORY_ICONS[category] || "📌"}</span>
+            <span style={{ fontSize: 10, fontWeight: 700, color: "#555", fontFamily: "monospace", letterSpacing: "0.1em", flex: 1 }}>{category.toUpperCase()}</span>
+            <span style={{ fontSize: 9, color: "#ccc", fontFamily: "monospace" }}>{items.length}</span>
+          </div>
+          {items.map(item => (
+            <div key={item.id} style={{ padding: "8px 14px", borderBottom: "1px solid #faf8f6", display: "flex", alignItems: "flex-start", gap: 10 }}>
+              {item.imgPreview && (
+                <img
+                  src={item.imgPreview}
+                  title={item.source}
+                  style={{ width: 72, height: 52, objectFit: "cover", borderRadius: 5, border: "1px solid #e0ddd8", flexShrink: 0, marginTop: 2, cursor: "pointer" }}
+                  onClick={() => window.open(item.imgPreview, "_blank")}
+                />
+              )}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <textarea
+                  value={item.text}
+                  onChange={e => onEdit(item.id, e.target.value)}
+                  rows={Math.max(2, Math.ceil(item.text.length / 60))}
+                  style={{ width: "100%", border: "none", background: "transparent", fontSize: 12, color: "#333", lineHeight: 1.55, fontFamily: "inherit", resize: "vertical", outline: "none", padding: 0, cursor: "text" }}
+                />
+                {item.source && <div style={{ fontSize: 9, color: "#ccc", fontFamily: "monospace", marginTop: 2 }}>[{item.source}]</div>}
+              </div>
+              <button onClick={() => onRemove(item.id)} style={{ background: "none", border: "1px solid #e0ddd8", color: "#ccc", borderRadius: 4, padding: "2px 8px", cursor: "pointer", fontSize: 10, fontFamily: "monospace", flexShrink: 0, lineHeight: 1.4, marginTop: 2 }}>✕</button>
+            </div>
+          ))}
+        </div>
+      ))}
+      {/* AI Reference section */}
+      <div style={{ background: "#fff", border: "1px solid #e8e6e1", borderRadius: 10, overflow: "hidden" }}>
+        <div style={{ padding: "8px 14px", background: "#faf9f7", borderBottom: "1px solid #f0eeea", display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 14 }}>✨</span>
+          <span style={{ fontSize: 10, fontWeight: 700, color: "#555", fontFamily: "monospace", letterSpacing: "0.1em", flex: 1 }}>AI РЕФЕРЕНС ПО ТЗ</span>
+          {!hasOpenaiKey && <span style={{ fontSize: 9, color: "#e67e22", fontFamily: "monospace" }}>потрібен OpenAI ключ</span>}
+        </div>
+        <div style={{ padding: "10px 14px" }}>
+          {aiRefImage ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <img src={aiRefImage} style={{ width: "100%", borderRadius: 6, border: "1px solid #e8e6e1" }} alt="AI Reference" />
+              <div style={{ display: "flex", gap: 8 }}>
+                <a href={aiRefImage} download="ai-reference.png" target="_blank" rel="noreferrer"
+                  style={{ fontSize: 10, color: "#3498db", fontFamily: "monospace", textDecoration: "none", border: "1px solid #3498db44", padding: "3px 10px", borderRadius: 4 }}>
+                  ↓ Завантажити
+                </a>
+                <button onClick={onGenerateAiRef} disabled={aiRefLoading || !hasOpenaiKey || cards.length === 0}
+                  style={{ fontSize: 10, color: "#888", fontFamily: "monospace", background: "none", border: "1px solid #e0ddd8", padding: "3px 10px", borderRadius: 4, cursor: "pointer" }}>
+                  ↺ Перегенерувати
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ flex: 1, lineHeight: 1.5 }}>
+                {aiRefErr
+                  ? <span style={{ fontSize: 11, color: "#e74c3c", fontFamily: "monospace" }}>⚠️ {aiRefErr}</span>
+                  : <span style={{ fontSize: 11, color: "#aaa" }}>Claude складе prompt по пунктах ТЗ → DALL-E 3 згенерує референс інтер'єру як напрямок для художника</span>
+                }
+              </div>
+              <button onClick={onGenerateAiRef} disabled={aiRefLoading || !hasOpenaiKey || cards.length === 0}
+                style={{ background: hasOpenaiKey && cards.length > 0 ? "#1a1a1a" : "#e8e6e1", color: hasOpenaiKey && cards.length > 0 ? "#f2f0ec" : "#aaa", border: "none", padding: "10px 18px", cursor: hasOpenaiKey && cards.length > 0 ? "pointer" : "not-allowed", fontSize: 11, fontFamily: "monospace", borderRadius: 6, flexShrink: 0, display: "flex", alignItems: "center", gap: 6 }}>
+                {aiRefLoading ? <><span style={{ display: "inline-block", width: 10, height: 10, border: "1.5px solid #fff", borderTop: "1.5px solid transparent", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} /> Генерую...</> : "✨ Згенерувати"}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {!hasRenders && (
+        <div style={{ background: "#fff5f5", border: "1px solid #e74c3c44", borderRadius: 8, padding: "10px 14px", fontSize: 11, color: "#e74c3c", fontFamily: "monospace" }}>
+          ⚠️ Рендери не завантажені. Поверніться назад та додайте рендери для аналізу.
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+        <button onClick={onBack} style={{ background: "transparent", border: "1px solid #ddd", color: "#888", padding: "12px 20px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 8 }}>← Назад</button>
+        <button onClick={onProceed} disabled={!hasRenders} style={{ flex: 1, background: hasRenders ? "#1a1a1a" : "#ccc", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: hasRenders ? "pointer" : "not-allowed", borderRadius: 8 }}>
+          {cards.length > 0 ? `АНАЛІЗУВАТИ РЕНДЕРИ (${cards.length} пунктів ТЗ) →` : "АНАЛІЗУВАТИ РЕНДЕРИ →"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Grid card ────────────────────────────────────────────────────────────────
 function GridCard({ item, data, status, idx, isRev, onSelect }) {
   const q = data?.quality;
@@ -1596,9 +1757,15 @@ function GridCard({ item, data, status, idx, isRev, onSelect }) {
       <div style={{ padding: "10px 12px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
           <span style={{ fontSize: 11, fontFamily: "monospace", color: "#555", fontWeight: 600 }}>{isRev ? "Раунд" : "Ракурс"} {idx + 1}</span>
-          {q && !status && <span style={{ fontSize: 13, fontWeight: 700, color: scoreColor, fontFamily: "monospace" }}>{q.score}%</span>}
+          {q && !status && <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: scoreColor, fontFamily: "monospace" }}>{q.score}%</span>
+            {q.tz_score != null && <span style={{ fontSize: 10, fontWeight: 600, color: q.tz_score >= 80 ? "#27ae60" : q.tz_score >= 55 ? "#e67e22" : "#e74c3c", fontFamily: "monospace", background: "#f5f4f1", padding: "1px 5px", borderRadius: 3 }}>ТЗ {q.tz_score}%</span>}
+          </div>}
         </div>
-        {q && !status && <div style={{ height: 3, background: "#eee", borderRadius: 2, overflow: "hidden", marginBottom: 7 }}><div style={{ height: "100%", width: `${q.score}%`, background: scoreColor, borderRadius: 2 }} /></div>}
+        {q && !status && <div style={{ display: "flex", flexDirection: "column", gap: 2, marginBottom: 7 }}>
+          <div style={{ height: 3, background: "#eee", borderRadius: 2, overflow: "hidden" }}><div style={{ height: "100%", width: `${q.score}%`, background: scoreColor, borderRadius: 2 }} /></div>
+          {q.tz_score != null && <div style={{ height: 2, background: "#eee", borderRadius: 2, overflow: "hidden" }}><div style={{ height: "100%", width: `${q.tz_score}%`, background: q.tz_score >= 80 ? "#27ae60" : q.tz_score >= 55 ? "#e67e22" : "#e74c3c", borderRadius: 2 }} /></div>}
+        </div>}
         <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
           {notFixC > 0 && <span style={{ fontSize: 9, background: "#e74c3c", color: "#fff", padding: "1px 6px", borderRadius: 3, fontFamily: "monospace" }}>❌ {notFixC}</span>}
           {critC > 0 && <span style={{ fontSize: 9, background: "#e67e22", color: "#fff", padding: "1px 6px", borderRadius: 3, fontFamily: "monospace" }}>🔴 {critC}</span>}
@@ -1704,21 +1871,40 @@ function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", n
 }
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
+const SESSION_KEY = "rqa_session";
+function saveSession(data) { try { localStorage.setItem(SESSION_KEY, JSON.stringify(data)); } catch {} }
+function loadSession() { try { const s = localStorage.getItem(SESSION_KEY); return s ? JSON.parse(s) : null; } catch { return null; } }
+function clearSession() { try { localStorage.removeItem(SESSION_KEY); } catch {} }
+
 export default function App() {
   const [mode, setMode] = useState("first");
   const [step, setStep] = useState(1);
   const [err, setErr] = useState("");
   const [sel, setSel] = useState(null);
+  const [savedSession, setSavedSession] = useState(() => loadSession());
   const [briefText, setBriefText] = useState("");
   const [perData, setPerData] = useState([]);
   const [statuses, setStatuses] = useState([]);
   const [globalSum, setGlobalSum] = useState("");
+  const [consistency, setConsistency] = useState(null); // cross-render consistency check
+  const [consistencyLoading, setConsistencyLoading] = useState(false);
   const [anthropicKey, setAnthropicKey] = useState(() => { try { return localStorage.getItem("anthropic_api_key") || ""; } catch { return ""; } });
   const saveAnthropicKey = k => { setAnthropicKey(k); try { localStorage.setItem("anthropic_api_key", k); } catch {} };
   const [archivizerToken, setArchivizerToken] = useState(() => { try { return localStorage.getItem("archivizer_token") || ""; } catch { return ""; } });
   const saveArchivizerToken = k => { setArchivizerToken(k); try { localStorage.setItem("archivizer_token", k); } catch {} };
   const [archivizerUrl, setArchivizerUrl] = useState("");
   const [archivizerStatus, setArchivizerStatus] = useState(null);
+  const [tzCards, setTzCards] = useState([]); // [{id, category, text, source, imgPreview}]
+  const [tzAnnotation, setTzAnnotation] = useState(""); // розгорнутий опис проекту
+  const [tzReview, setTzReview] = useState(false);
+  const [tzParsing, setTzParsing] = useState(false);
+  const cachedPartsRef = useRef(null); // зберігає cacheParts після runAnalysis для retry
+  const analysisRunningRef = useRef(false);
+  const [openaiKey, setOpenaiKey] = useState(() => { try { return localStorage.getItem("openai_api_key") || ""; } catch { return ""; } });
+  const saveOpenaiKey = k => { setOpenaiKey(k); try { localStorage.setItem("openai_api_key", k); } catch {} };
+  const [aiRefImage, setAiRefImage] = useState(null); // generated DALL-E image data url
+  const [aiRefLoading, setAiRefLoading] = useState(false);
+  const [aiRefErr, setAiRefErr] = useState("");
 
   const renders = useFileList(); const briefs = useFileList(); const refs = useFileList(); const draws = useFileList();
   const revBriefs = useFileList(); const revRefs = useFileList(); const revDraws = useFileList();
@@ -1770,6 +1956,9 @@ export default function App() {
   };
 
   async function runAnalysis() {
+    if (analysisRunningRef.current) return;
+    analysisRunningRef.current = true;
+    try {
     const isRev = mode === "revision";
     if (isRev) {
       const vp = pairs.filter(p => {
@@ -1847,7 +2036,7 @@ ${JSON_SCHEMA}` }];
         parts.push(...filesToParts(readyFiles(revDraws), "КРЕСЛЕННЯ"));
         try {
           const p = await callAPI(parts, 2, anthropicKey);
-          results[ri] = { tz_parsed: p.tz_parsed || [], checks: p.checks || [], items: p.items || [], corrections: p.corrections || [], defects: p.defects || [], materials: p.materials || [], quality: p.quality || null, summary: p.summary || "" };
+          results[ri] = normalizeZones({ tz_parsed: p.tz_parsed || [], checks: p.checks || [], items: p.items || [], corrections: p.corrections || [], defects: p.defects || [], materials: p.materials || [], quality: p.quality || null, summary: p.summary || "" });
           if (p.globalSummary) setGlobalSum(p.globalSummary);
         } catch (e) { results[ri] = { items: [], corrections: [], defects: [], materials: [], quality: null, error: e.message }; }
         setPerData([...results]);
@@ -1869,6 +2058,31 @@ ${JSON_SCHEMA}` }];
       const hasRefs = refsList.length > 0;
       const hasExcel = drawsList.some(d => d.type === "excel") || briefsList.some(d => d.type === "excel");
 
+      // ── Структуровані вимоги ТЗ ──────────────────────────────────────────────
+      const groupedTzCards = tzCards.length > 0
+        ? Object.entries(tzCards.reduce((acc, c) => { if (!acc[c.category]) acc[c.category] = []; acc[c.category].push(c.text); return acc; }, {})).map(([cat, its]) => ({ category: cat, items: its }))
+        : [];
+      const tzSection = tzCards.length > 0
+        ? `ПІДТВЕРДЖЕНІ ВИМОГИ ТЗ (${tzCards.length} пунктів — перевір КОЖЕН):\n${tzCards.map(c => `[${c.id}] ${c.category}: ${c.text}${c.source ? ` (${c.source})` : ""}`).join("\n")}\n${mn}`
+        : `ТЗ КЛІЄНТА:\n${briefText.trim() || "(дивись прикріплені матеріали)"}\n${mn}`;
+      const tzParsedInstruction = tzCards.length > 0
+        ? `- "tz_parsed": [] (вимоги вже підтверджені, не повторюй)
+- "items" — ВІЗУАЛЬНІ МАРКЕРИ на рендері, по кожній підтвердженій вимозі (${tzCards.length} пунктів).
+  РІЗНИЦЯ між items і checks: items = де саме на зображенні, checks = загальна оцінка по Q-коду.
+  Заповни ОБОВ'ЯЗКОВО всі ${tzCards.length} пунктів:
+  • id: відповідний id (${tzCards.slice(0, 5).map(c => c.id).join(", ")}${tzCards.length > 5 ? "..." : ""})
+  • comment: текст вимоги з ТЗ (коротко)
+  • status: "fixed" (виконано) | "not_fixed" (не виконано) | "partial" (частково)
+  • note: що конкретно знайдено на рендері — одне речення
+  • zone: ОБОВ'ЯЗКОВО — координати елемента на рендері навіть якщо виконано (щоб показати маркер)`
+        : `- Заповни "tz_parsed" — що ти зрозумів з ТЗ/брифу/референсів/креслень:
+  • Згрупуй по категоріях: "Матеріали", "Меблі та моделі", "Сезон / атмосфера", "Креслення", "Логотип / написи", "Вимоги клієнта" та інші що є
+  • Кожен пункт — конкретна вимога: "Диван — червоний велюр (бриф)", "Вікно зліва (креслення)"
+  • Якщо категорія не має матеріалів — не включай
+- "items" — ВІЗУАЛЬНІ МАРКЕРИ: по кожній вимозі з tz_parsed постав маркер на рендері.
+  РІЗНИЦЯ: items = де на зображенні, checks = оцінка по Q-коду. Це різні масиви, не дублюй.
+  • id, comment, status (fixed/not_fixed/partial), note, zone (ОБОВ'ЯЗКОВО)`;
+
       // Визначаємо тип проекту з тексту ТЗ
       const tzLower = briefText.toLowerCase();
       const isExterior = /екстер|exterior|фасад|facade|будинок|house|office|building|landscape|ландшафт/.test(tzLower);
@@ -1877,138 +2091,207 @@ ${JSON_SCHEMA}` }];
       const isMiddleEast = /middle east|arab|dubai|uae|qatar|saudi|халяль/.test(tzLower);
       const hasLandscape = /ландшафт|landscape|garden|сад|озеленен/.test(tzLower);
 
-      for (let ri = 0; ri < rImages.length; ri++) {
-        setStatuses(prev => prev.map((s, i) => i === ri ? "Аналізую…" : i > ri ? "У черзі…" : null));
-        const render = rImages[ri]; const isLast = ri === rImages.length - 1;
-
-        // ── Формуємо тільки релевантні блоки перевірки ──
-        const blocks = [];
-
-        // Блок 1: Технічні дефекти — ЗАВЖДИ
-        blocks.push(`── БЛОК 1: ТЕХНІЧНІ ДЕФЕКТИ (завжди перевіряй) ──
+      // ── Формуємо кешовані частини ОДИН РАЗ для всіх рендерів ──────────────────
+      const blocks = [];
+      blocks.push(`── БЛОК 1: ТЕХНІЧНІ ДЕФЕКТИ (завжди перевіряй) ──
 Q1.1 ЛЕВІТАЦІЯ: Всі предмети стоять на поверхні? Ніжки меблів, декор, килими. Немає тіні = левітація.
 Q1.2 ПЕРЕТИН: Об'єкти крізь стіни/підлогу/стелю/одне одного? Будь-який кліппінг = баг.
 Q1.3 ТЕКСТУРИ: Тайлінг видно? Стрейчінг? Неправильний масштаб? Шви між поверхнями?
 Q1.4 ЗУБЧАТІСТЬ: Зубчасті краї на кривих лініях, поручнях, тонких об'єктах?
 Q1.5 АРТЕФАКТИ: Fireflies, noise, blotchy shadows, темні плями на стелі/кутах?
 Q1.6 МАТЕРІАЛИ: IOR коректний? Roughness відповідає? Пластиковий вигляд у металів?`);
-
-        // Блок 2: Креслення — тільки якщо надані
-        if (drawCount > 0 || hasDwgText) {
-          blocks.push(`── БЛОК 2: ВІДПОВІДНІСТЬ КРЕСЛЕННЯМ (надані — перевіряй суворо) ──
+      if (drawCount > 0 || hasDwgText) {
+        blocks.push(`── БЛОК 2: ВІДПОВІДНІСТЬ КРЕСЛЕННЯМ (надані — перевіряй суворо) ──
 ${BLUEPRINT_COMPARE_PROMPT}
 ${isExterior ? "• Фасади (Elevations): пропорції, висоти, деталі?\n• Гребінь/коник даху: правильна форма?\n• Цегла/сайдинг: відповідає кресленню?\n• Водостоки (Gutter): наявні та правильно розміщені?\n• Вентканали: присутні згідно плану?" : ""}
 ${isInterior ? "• Floorplan: меблі на своїх місцях?\n• Вікна/двері/ручки/плінтуси/карнизи: всі деталі присутні?\n• Розкладка плитки/підлог: патерн та напрямок відповідає?\n• Освітлення/розетки по electrical plan?" : ""}
 ${hasLandscape || isExterior ? "• Ландшафтний план: озеленення, доріжки, зони відповідають?" : ""}`);
-        }
-
-        // Блок 3: Бриф/Мудборд — тільки якщо є бриф або референси
-        if (hasBrief || hasRefs) {
-          blocks.push(`── БЛОК 3: ВІДПОВІДНІСТЬ БРИФУ / МУДБОРДУ ──
+      }
+      if (hasBrief || hasRefs) {
+        blocks.push(`── БЛОК 3: ВІДПОВІДНІСТЬ БРИФУ / МУДБОРДУ ──
 • Побажання клієнта з ТЗ: кожен пункт виконано?
 • Пора року: рослинність і атмосфера відповідають (якщо вказано)?
 • День/ніч: тип освітлення, небо, світло у вікнах відповідає?
 • Кольори/матеріали/стиль: відповідають мудборду?
 ${hasRefs ? "• Відповідність референсам: настрій і атмосфера схожі?" : ""}
 • Тип освітлення: природне/штучне/змішане — відповідає запиту?`);
-        }
-
-        // Блок 4: Специфічні моделі — тільки якщо в ТЗ є запит
-        if (hasBrief && /меблі|мебель|furniture|росли|plant|декор|decor|модел/.test(tzLower)) {
-          blocks.push(`── БЛОК 4: СПЕЦИФІЧНІ МОДЕЛІ ПО ЗАПИТУ (якщо в ТЗ є конкретні запити) ──
+      }
+      if (hasBrief && /меблі|мебель|furniture|росли|plant|декор|decor|модел/.test(tzLower)) {
+        blocks.push(`── БЛОК 4: СПЕЦИФІЧНІ МОДЕЛІ ПО ЗАПИТУ ──
 • Конкретні меблі/бренди з ТЗ: присутні?
 • Конкретні рослини/види: присутні?
 • Предмети декору по запиту: присутні?
 Перевіряй ТІЛЬКИ те що явно запитано в ТЗ — не вигадуй.`);
-        }
-
-        // Блок 5: Геосеттинг — завжди але адаптовано до типу
-        const reosettingItems = [
-          isInterior && "• Розетки: наявні на стінах в логічних місцях?",
-          isExterior && "• Номери машин: не безглузді символи?",
-          "• Рослинність: виглядає природно, не copy-paste клони?",
-          isExterior && "• Дороги/знаки/розмітка/зливи: відповідають країні проекту?",
-          "• Формат часу на техніці/вивісках: коректний (не 88:88)?",
-          isInterior && "• Сантехніка: деталі виглядають реалістично?",
-          "• Штори/жалюзі: природно звисають, складки реалістичні?",
-          isMiddleEast && "• Одяг на людях: відповідний дрес-код (Middle East)?",
-          "• BEK/фон: оточення логічне та доречне?",
-        ].filter(Boolean).join("\n");
-        blocks.push(`── БЛОК 5: РЕОСЕТТИНГ (деталі реалізму) ──\n${reosettingItems}`);
-
-        // Блок 6: Написи/Лого — тільки якщо є ознаки
-        if (hasLogoMention || isExterior || /комерц|commercial|shop|office|retail/.test(tzLower)) {
-          blocks.push(`── БЛОК 6: НАПИСИ / ЛОГО / НЕЙМИНГ ──
+      }
+      const reosettingItems = [
+        isInterior && "• Розетки: наявні на стінах в логічних місцях?",
+        isExterior && "• Номери машин: не безглузді символи?",
+        "• Рослинність: виглядає природно, не copy-paste клони?",
+        isExterior && "• Дороги/знаки/розмітка/зливи: відповідають країні проекту?",
+        "• Формат часу на техніці/вивісках: коректний (не 88:88)?",
+        isInterior && "• Сантехніка: деталі виглядають реалістично?",
+        "• Штори/жалюзі: природно звисають, складки реалістичні?",
+        isMiddleEast && "• Одяг на людях: відповідний дрес-код (Middle East)?",
+        "• BEK/фон: оточення логічне та доречне?",
+      ].filter(Boolean).join("\n");
+      blocks.push(`── БЛОК 5: РЕОСЕТТИНГ (деталі реалізму) ──\n${reosettingItems}`);
+      if (hasLogoMention || isExterior || /комерц|commercial|shop|office|retail/.test(tzLower)) {
+        blocks.push(`── БЛОК 6: НАПИСИ / ЛОГО / НЕЙМИНГ ──
 • Логотипи: правильно відображені, не спотворені?
 • Написи на вивісках/банерах: осмислені, не Lorem Ipsum?
 • Написи англійською: граматично правильні?
 • Шрифти: відповідають брендбуку або запиту?`);
-        }
-
-        // Блок 7: Client Critical — тільки якщо є специфічні вимоги в ТЗ
-        if (/dpi|resolution|розрішен|формат|tif|psd|маск|mask|ratio|actq/.test(tzLower)) {
-          blocks.push(`── БЛОК 7: CLIENT CRITICAL REQUIREMENTS ──
+      }
+      if (/dpi|resolution|розрішен|формат|tif|psd|маск|mask|ratio|actq/.test(tzLower)) {
+        blocks.push(`── БЛОК 7: CLIENT CRITICAL REQUIREMENTS ──
 • Перевір з ТЗ: розрішення/DPI, нейминг файлів, співвідношення сторін, формат (TIFF/PSD/маски), Studio standards ACTQ.`);
-        }
+      }
+      const activeChecklist = blocks.join("\n\n");
 
-        const activeChecklist = blocks.join("\n\n");
+      // Будуємо кешовані частини: інструкції + всі матеріали (бриф, референси, креслення)
+      const cacheParts = [{ type: "text", text: `Ти — PM та Art Director студії 3D-візуалізації. Перевіряєш проект з ${rImages.length} ракурс(ів).
 
-        const parts = [{ type: "text", text: `Ти — старший QA-спеціаліст 3D-візуалізації. Перевіряєш ракурс ${ri + 1} з ${rImages.length}.
+Твоя роль — двошарова перевірка кожного рендеру:
+▸ PM: відповідність ТЗ — кожен пункт або виконано, або ні. Без компромісів.
+▸ Art Director: художня якість — композиція, світло, атмосфера, матеріали.
 
-ТЗ КЛІЄНТА:
-${briefText.trim() || "(дивись прикріплені матеріали)"}
-${mn}
+ЗАЛІЗНЕ ПРАВИЛО: якщо ТЗ каже "червоний велюр" — є тільки два результати: "виконано" або "не виконано — замінити на червоний велюр". ЗАБОРОНЕНО пропонувати: "схоже підійде", "можна замінити на", "альтернативно", "також вписується в палітру". Будь-яка зміна вимоги — рішення тільки клієнта і PM.
+
+${tzSection}
 
 ${ZONE_PROMPT}
 
-АКТИВНІ БЛОКИ ПЕРЕВІРКИ (сформовані на основі наданих матеріалів):
+══════════════════════════════════════════
+ШАРИ ПЕРЕВІРКИ
+══════════════════════════════════════════
+
+── ШАР 1: ВІДПОВІДНІСТЬ ТЗ (PM) ──
+${tzCards.length > 0
+  ? `Перевір КОЖЕН з ${tzCards.length} підтверджених пунктів ТЗ буквально:
+• Знайди відповідний елемент на рендері
+• Порівняй з вимогою точно — без інтерпретацій та припущень
+• note формат: "ТЗ: [вимога] → Знайдено: [що є] → [виконано / не виконано]"
+• Якщо не виконано — додай тільки: "Виправити: [точна вимога з ТЗ]"`
+  : `Перевір відповідність до всіх вимог з матеріалів:
+• Кожна вимога з брифу/референсів/креслень перевірена
+• note формат: "ТЗ: [вимога] → Знайдено: [що є] → [виконано / не виконано]"`}
+
+── ШАР 2: ХУДОЖНЯ ЯКІСТЬ (Art Director) ──
+Оціни незалежно від ТЗ — суто художній погляд:
+• Композиція: баланс кадру, фокусна точка, глибина, провідні лінії
+• Освітлення: атмосфера, м'якість/жорсткість тіней, правдоподібність джерел світла
+• Кольорова гармонія: чи "звучить" палітра разом? Баланс теплого/холодного?
+• Матеріали: художнє відчуття поверхні, реалізм текстур (не технічний — естетичний)
+• Загальна атмосфера: чи є "настрій" і "душа" в рендері?
+note формат: "[AD спостереження] → Рекомендація художнику: [конкретна дія в рамках заданого стилю]"
+НЕ пропонуй зміни вимог ТЗ тут — тільки художні покращення.
+Використовуй qa_tag: AD.1 (композиція), AD.2 (освітлення), AD.3 (колір/атмосфера), AD.4 (матеріали/текстури)
+
+── ШАР 3: ТЕХНІЧНІ ДЕФЕКТИ (QA) ──
 ${activeChecklist}
 
 СТАНДАРТИ ЯКОСТІ:
 ${QUAL_C}
 
+ПІДРАХУНОК СКОРІВ (два незалежних числа):
+▸ quality.score (0-100) = якість РЕНДЕРУ: враховуй тільки Q1.x + AD.x + Q3.x
+  fail = -15..20 балів залежно від severity, warn = -5..8, ok = повний бал, skipped = не враховується
+  standard = NON (<55), MLR (55-79), SDC (80-100)
+▸ quality.tz_score (0-100) = виконання ТЗ: враховуй тільки Q2.x + Q4.x
+  tz_done = кількість ok/warn серед Q2.x+Q4.x, tz_total = загальна кількість перевірених Q2.x+Q4.x
+  tz_score = round(tz_done / tz_total * 100)
+ВАЖЛИВО: рендер може бути SDC 90% але tz_score 40% — це нормально, це різні виміри.
+
 ПРАВИЛА:
-- Перевіряй ТІЛЬКИ те що реально можна побачити або перевірити на основі наданих матеріалів
-- Якщо блок не релевантний (наприклад креслень немає — не вигадуй невідповідності по кресленню)
+- Перевіряй ТІЛЬКИ те що реально видно на рендері або підтверджено матеріалами
+- Якщо блок не релевантний — не вигадуй проблеми
 - Кожна проблема ОБОВ'ЯЗКОВО має zone з точними координатами
-- qa_tag: Q1.1-Q1.6 (технічні), Q2.1 (креслення), Q2.2 (бриф), Q2.3 (моделі), Q3.1 (геосеттинг), Q3.2 (написи), Q4.1 (client req)
-- Заповни "tz_parsed" — що ти зрозумів з ТЗ/брифу/референсів/креслень до перевірки рендеру:
-  • Згрупуй по категоріях: "Матеріали", "Меблі та моделі", "Сезон / атмосфера", "Креслення", "Логотип / написи", "Вимоги клієнта" та інші що є
-  • Кожен пункт — конкретна вимога з джерела: "Диван — червоний велюр (бриф)", "Вікно зліва (креслення)"
-  • Якщо якась категорія не має матеріалів — не включай її
-- Заповни "checks" — ОБОВ'ЯЗКОВО по кожному Q-пункту що перевірявся:
-  • id: Q1.1...Q4.1 (Q2.2 може мати два записи: Q2.2 для ТЗ і Q2.2b для матеріалів)
-  • status: "ok" (без зауважень), "warn" (незначне), "fail" (є проблема), "skipped" (матеріал не наданий або не застосовно)
-  • group: "technical" (Q1.x), "tz" (невідповідність типу/виду — неправильний колір, матеріал, меблі, чертёж), "materials" (нюанс — недостатньо насичений, не той відтінок), "geosetting" (Q3.x), "client" (Q4.x)
-  • note — ЗАВЖДИ у форматі:
-    - якщо є розбіжність: "Еталон ([джерело]): [що має бути] → Знайдено: [що є на рендері] → [висновок]"
-      де [джерело] = "бриф", "референс", "креслення", "ТЗ п.3" тощо
-      приклад: "Еталон (бриф): червоний велюр → Знайдено: синя тканина → ТЗ не виконано"
-      приклад: "Еталон (референс): теплий беж → Знайдено: холодний беж → нюанс кольору"
-    - якщо все ок: "Перевірено — зауважень немає" + коротко що саме перевірено
-    - якщо skipped: "Матеріал не наданий" або "Не застосовно до цього проекту"
-  • Важливо: Q2.x з group "tz" = неправильний ТИП (має бути червоний → є синій), group "materials" = нюанс відтінку (бежевий але недостатньо теплий)
-${isLast ? "- Заповни globalSummary — загальна оцінка всього проекту." : '- globalSummary: ""'}
+- qa_tag: Q1.1-Q1.6 (технічні), Q2.1 (креслення), Q2.2 (ТЗ), Q2.3 (моделі), Q3.1 (геосеттинг), Q3.2 (написи), Q4.1 (client req), AD.1-AD.4 (художні)
+${tzParsedInstruction}
+- Заповни "checks" по кожному перевіреному пункту:
+  • id: Q1.1...Q4.1, AD.1...AD.4
+  • status: "ok" / "warn" / "fail" / "skipped"
+  • group: "technical" (Q1.x), "tz" (неправильний ТИП по ТЗ), "materials" (нюанс відтінку), "geosetting" (Q3.x), "client" (Q4.x), "artistic" (AD.x)
+  • note ЗАВЖДИ за шаблоном шару:
+    ТЗ-пункт: "ТЗ: [вимога] → Знайдено: [що є] → [виконано/не виконано]" + якщо fail: "Виправити: [точна вимога]"
+    AD-пункт: "[спостереження] → Рекомендація художнику: [конкретна дія]"
+    Tech-пункт: "Знайдено: [опис] → Виправити: [конкретна дія]"
+    OK: "Перевірено — [що саме] відповідає"
+    Skipped: "Матеріал не наданий" або "Не застосовно"
+  • ЗАБОРОНЕНО в будь-якому note: "можна замінити на", "схоже підійде", "альтернативно", "також вписується", "близький варіант"
+  • Q2.x group "tz" = неправильний ТИП (червоний → є синій). group "materials" = нюанс (бежевий але холодний відтінок)
 
 ВІДПОВІДАЙ ТІЛЬКИ JSON:
 ${JSON_SCHEMA}` }];
+      cacheParts.push(...filesToParts(briefsList, "БРИФ"));
+      cacheParts.push(...filesToParts(refsList, "РЕФЕРЕНС"));
+      cacheParts.push(...filesToParts(drawsList, "КРЕСЛЕННЯ"));
+      // Позначаємо останній елемент як межу кешу — все до нього кешується
+      if (cacheParts.length > 0) {
+        cacheParts[cacheParts.length - 1] = { ...cacheParts[cacheParts.length - 1], cache_control: { type: "ephemeral" } };
+      }
+      cachedPartsRef.current = cacheParts; // зберігаємо для retryFailed
+
+      for (let ri = 0; ri < rImages.length; ri++) {
+        setStatuses(prev => prev.map((s, i) => i === ri ? "Аналізую…" : i > ri ? "У черзі…" : null));
+        const render = rImages[ri]; const isLast = ri === rImages.length - 1;
+
+        // Унікальна частина для кожного рендера
+        const renderParts = [{ type: "text", text: `Аналізуй ракурс ${ri + 1} з ${rImages.length}.${isLast ? "\nЗаповни globalSummary — загальна оцінка всього проекту." : '\nglobalSummary: ""'}` }];
         (render.pages || []).filter(p => p.b64).forEach((pg, pi) => {
-          parts.push({ type: "text", text: `РЕНДЕР ${ri + 1}${pi > 0 ? ` стор.${pi + 1}` : ""}:` });
-          parts.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: pg.b64 } });
+          renderParts.push({ type: "text", text: `РЕНДЕР ${ri + 1}${pi > 0 ? ` стор.${pi + 1}` : ""}:` });
+          renderParts.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: pg.b64 } });
         });
-        parts.push(...filesToParts(briefsList, "БРИФ"));
-        parts.push(...filesToParts(readyFiles(refs), "РЕФЕРЕНС"));
-        parts.push(...filesToParts(drawsList, "КРЕСЛЕННЯ"));
+
+        const parts = [...cacheParts, ...renderParts];
         try {
           const p = await callAPI(parts, 2, anthropicKey);
-          results[ri] = { tz_parsed: p.tz_parsed || [], checks: p.checks || [], items: p.items || [], corrections: p.corrections || [], defects: p.defects || [], materials: p.materials || [], quality: p.quality || null, summary: p.summary || "" };
+          results[ri] = normalizeZones({ tz_parsed: p.tz_parsed || [], checks: p.checks || [], items: p.items || [], corrections: p.corrections || [], defects: p.defects || [], materials: p.materials || [], quality: p.quality || null, summary: p.summary || "" });
           if (p.globalSummary) setGlobalSum(p.globalSummary);
         } catch (e) { results[ri] = { items: [], corrections: [], defects: [], materials: [], quality: null, error: e.message }; }
         setPerData([...results]);
+        saveSession({ savedAt: new Date().toISOString(), mode, perData: results, globalSum, tzCards: tzCards.map(c => ({ ...c, imgPreview: null })) });
         setStatuses(prev => prev.map((s, i) => i === ri ? null : s));
-        // Пауза між запитами щоб не впиратись в rate limit
         if (ri < rImages.length - 1) await new Promise(r => setTimeout(r, 1500));
       }
+
+      // ── Consistency check — тільки якщо 2+ ракурсів без помилок ──────────────
+      const validResults = results.filter(r => r && !r.error);
+      if (validResults.length >= 2) {
+        setConsistencyLoading(true);
+        try {
+          const summaries = validResults.map((r, i) => `Ракурс ${i + 1}: ${r.summary || "без summary"}`).join("\n");
+          const consParts = [{ type: "text", text: `Ти — Art Director. Проаналізуй консистентність пост-продакшну між ${rImages.length} ракурсами одного проекту.
+
+Саммарі по кожному ракурсу:
+${summaries}
+
+Перевір консистентність по всіх параметрах:
+• Освітлення: однаковий тип, температура, напрямок тіней між ракурсами?
+• Кольорокорекція: однаковий тон, насиченість, контраст, гамма?
+• Атмосфера: однаковий настрій, пора дня, погода?
+• Матеріали: один і той самий матеріал (диван, підлога, стіни) виглядає ОДНАКОВО на всіх ракурсах де видно? Колір, відтінок, roughness, відблиски?
+• Кольори об'єктів: один і той самий предмет не змінює колір між ракурсами?
+• Моделі: одні й ті самі меблі/декор виглядають однаково (не різні версії моделі)?
+• Постпродакшн: однаковий стиль обробки, однакові фільтри/ефекти?
+
+ВІДПОВІДАЙ ТІЛЬКИ JSON:
+{"consistency":{"score":85,"verdict":"Консистентний","issues":[{"type":"lighting|color|materials|models|postprod","description":"Диван на ракурсі 1 виглядає темнішим ніж на ракурсі 3 — різний відтінок тканини","renders":[1,3]}],"summary":"Загальний висновок по консистентності пост-продакшну"}}` }];
+          rImages.forEach((render, ri) => {
+            (render.pages || []).filter(p => p.b64).slice(0, 1).forEach(pg => {
+              consParts.push({ type: "text", text: `Ракурс ${ri + 1}:` });
+              consParts.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: pg.b64 } });
+            });
+          });
+          const cp = await callAPI(consParts, 1, anthropicKey);
+          const cons = cp.consistency || null;
+          setConsistency(cons);
+          saveSession({ savedAt: new Date().toISOString(), mode, perData: results, globalSum, consistency: cons, tzCards: tzCards.map(c => ({ ...c, imgPreview: null })) });
+        } catch (e) { setConsistency({ error: e.message }); }
+        setConsistencyLoading(false);
+      }
+    } finally {
+      analysisRunningRef.current = false;
     }
   }
 
@@ -2016,34 +2299,289 @@ ${JSON_SCHEMA}` }];
     const rImages = readyFiles(renders).filter(f => f.pages?.some(p => p.b64));
     const failedIdxs = perData.map((d, i) => d?.error ? i : -1).filter(i => i >= 0);
     if (!failedIdxs.length) return;
+    if (!cachedPartsRef.current) { setErr("Не вдалось повторити — перезапустіть аналіз заново."); return; }
     const newStatuses = perData.map((d, i) => d?.error ? "Повтор…" : statuses[i]);
     setStatuses([...newStatuses]);
     const results = [...perData];
-    const drawsList = readyFiles(draws);
-    const briefsList = readyFiles(briefs);
-    const mn = matNote([...briefsList, ...drawsList]);
-    const drawCount = drawsList.filter(d => d.type !== "excel").length;
     for (const ri of failedIdxs) {
       const render = rImages[ri]; if (!render) continue;
       const isLast = ri === rImages.length - 1;
-      const drawNote = drawCount > 0 ? `\nКреслень надано: ${drawCount} шт. — ${BLUEPRINT_COMPARE_PROMPT}` : "";
-      const parts = [{ type: "text", text: `Ти — старший арт-директор і QA-спеціаліст 3D-візуалізації інтер'єрів. Ракурс ${ri + 1} з ${rImages.length}.\n\nТЗ:\n${briefText.trim() || "(дивись матеріали)"}\n${drawNote}${mn}\n\n${ZONE_PROMPT}\n\n${QA_CHECKLIST_DETAIL}\n\nСТАНДАРТИ: ${QUAL_C}\n${isLast ? "Заповни globalSummary." : 'globalSummary: ""'}\n\nВІДПОВІДАЙ ТІЛЬКИ JSON:\n${JSON_SCHEMA}` }];
+      const renderParts = [{ type: "text", text: `Аналізуй ракурс ${ri + 1} з ${rImages.length}.${isLast ? "\nЗаповни globalSummary — загальна оцінка всього проекту." : '\nglobalSummary: ""'}` }];
       (render.pages || []).filter(p => p.b64).forEach((pg, pi) => {
-        parts.push({ type: "text", text: `РЕНДЕР ${ri + 1}${pi > 0 ? ` стор.${pi + 1}` : ""}:` });
-        parts.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: pg.b64 } });
+        renderParts.push({ type: "text", text: `РЕНДЕР ${ri + 1}${pi > 0 ? ` стор.${pi + 1}` : ""}:` });
+        renderParts.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: pg.b64 } });
       });
-      parts.push(...filesToParts(briefsList, "БРИФ"));
-      parts.push(...filesToParts(readyFiles(refs), "РЕФЕРЕНС"));
-      parts.push(...filesToParts(drawsList, "КРЕСЛЕННЯ"));
+      const parts = [...cachedPartsRef.current, ...renderParts];
       try {
         const p = await callAPI(parts, 2, anthropicKey);
-        results[ri] = { items: p.items || [], corrections: p.corrections || [], defects: p.defects || [], materials: p.materials || [], quality: p.quality || null, summary: p.summary || "" };
+        results[ri] = { tz_parsed: p.tz_parsed || [], checks: p.checks || [], items: p.items || [], corrections: p.corrections || [], defects: p.defects || [], materials: p.materials || [], quality: p.quality || null, summary: p.summary || "" };
         if (p.globalSummary) setGlobalSum(p.globalSummary);
       } catch (e) { results[ri] = { items: [], corrections: [], defects: [], materials: [], quality: null, error: e.message }; }
       setPerData([...results]);
       setStatuses(prev => prev.map((s, i) => i === ri ? null : s));
       if (ri !== failedIdxs[failedIdxs.length - 1]) await new Promise(r => setTimeout(r, 1500));
     }
+  }
+
+  function generateReport() {
+    const rImgs = readyFiles(renders).filter(f => f.pages?.some(p => p.b64));
+    const validResults = perData.filter(d => d?.quality?.score);
+    const avg = validResults.length ? Math.round(validResults.reduce((s,d) => s + d.quality.score, 0) / validResults.length) : null;
+    const stdKey = avg ? (avg >= 80 ? "SDC" : avg >= 55 ? "MLR" : "NON") : null;
+    const SC = { NON: "#e74c3c", MLR: "#e67e22", SDC: "#27ae60" };
+    const stC = { ok: "#27ae60", warn: "#e67e22", fail: "#e74c3c", skipped: "#bbb" };
+    const stI = { ok: "✅", warn: "⚠️", fail: "❌", skipped: "—" };
+    const svC = { high: "#e74c3c", medium: "#e67e22", low: "#3498db" };
+    const mC = { match: "#27ae60", mismatch: "#e74c3c", missing: "#9b59b6", unknown: "#aaa" };
+    const mL = { match: "Відповідає", mismatch: "Невідповідність", missing: "Відсутній", unknown: "?" };
+    const e = s => String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+    // ── ТЗ (колонки) ──
+    const tzHtml = tzCards.length > 0 ? (() => {
+      const grouped = tzCards.reduce((acc,c) => { if(!acc[c.category]) acc[c.category]=[]; acc[c.category].push(c); return acc; }, {});
+      const cols = Object.entries(grouped).map(([cat, items]) => `
+        <div class="tz-col">
+          <div class="tz-cat">${e(cat)}</div>
+          ${items.map(it => `<div class="tz-row">• ${e(it.text)}${it.source?` <span class="src">[${e(it.source)}]</span>`:""}</div>`).join("")}
+        </div>`).join("");
+      return `<div class="block tz-block"><div class="block-title">📋 Пункти ТЗ (${tzCards.length})</div><div class="tz-grid">${cols}</div></div>`;
+    })() : "";
+
+    // ── Ракурси ──
+    const rendersHtml = perData.map((data, i) => {
+      if (!data || data.error) return "";
+      const thumb = rImgs[i]?.preview || rImgs[i]?.pages?.[0]?.preview;
+      const sk = data.quality?.standard?.startsWith("SDC") ? "SDC" : data.quality?.standard?.startsWith("MLR") ? "MLR" : "NON";
+      const checks = data.checks || [], defects = data.defects || [], mats = data.materials || [];
+
+      const checksHtml = checks.length ? `
+        <div class="sub-title">QA Перевірка</div>
+        <div class="checks-grid">
+          ${checks.map(c => `<div class="chk" style="border-left:3px solid ${stC[c.status]||"#eee"}">
+            <div class="chk-top"><span class="chk-icon">${stI[c.status]||"—"}</span><span class="chk-id" style="color:${stC[c.status]||"#bbb"}">${e(c.id)}</span></div>
+            <div class="chk-note">${e(c.note)}</div>
+          </div>`).join("")}
+        </div>` : "";
+
+      const defHtml = defects.length ? `
+        <div class="sub-title">Дефекти (${defects.length})</div>
+        <div class="def-list">
+          ${defects.map(d => `<div class="def-row">
+            <span class="dot" style="background:${svC[d.severity]||"#999"}"></span>
+            <div><b>${e(d.title)}</b>${d.qa_tag?` <span class="tag">${e(d.qa_tag)}</span>`:""}${d.description?`<br><span class="dim">${e(d.description)}</span>`:""}</div>
+          </div>`).join("")}
+        </div>` : "";
+
+      const matHtml = mats.length ? `
+        <div class="sub-title">Матеріали (${mats.length})</div>
+        <div class="mat-grid">
+          ${mats.map(m => `<div class="mat-row">
+            <span class="dot" style="background:${mC[m.status]||"#aaa"}"></span>
+            <span class="mat-name">${e(m.name)}</span>
+            <span style="color:${mC[m.status]||"#aaa"};font-size:9px">${mL[m.status]||""}</span>
+          </div>`).join("")}
+        </div>` : "";
+
+      return `<div class="block render-block">
+        <div class="render-top">
+          ${thumb ? `<img src="${thumb}" class="thumb">` : ""}
+          <div class="render-right">
+            <div class="render-hdr">
+              <span class="render-num">Ракурс ${i+1}${rImgs.length>1?` / ${rImgs.length}`:""}</span>
+              ${data.quality?`<span class="badge" style="background:${SC[sk]}">${e(data.quality.standard)} ${data.quality.score}%</span>`:""}
+              ${data.quality?.tz_score!=null?`<span class="badge" style="background:${data.quality.tz_score>=80?"#27ae60":data.quality.tz_score>=55?"#e67e22":"#e74c3c"}">ТЗ ${data.quality.tz_score}%${data.quality.tz_total?` (${data.quality.tz_done}/${data.quality.tz_total})`:""}</span>`:""}
+            </div>
+            ${data.summary?`<div class="summary">${e(data.summary)}</div>`:""}
+          </div>
+        </div>
+        ${checksHtml}${defHtml}${matHtml}
+      </div>`;
+    }).join("");
+
+    const css = `
+      *{box-sizing:border-box;margin:0;padding:0}
+      body{font-family:Arial,sans-serif;font-size:11px;color:#333;background:#fff;padding:0}
+      .cover{background:#1a1a1a;color:#f2f0ec;padding:24px 24px 20px;display:flex;align-items:center;gap:20px}
+      .cover-text .label{font-size:9px;color:#555;letter-spacing:.15em;margin-bottom:4px}
+      .cover-text .title{font-size:22px;font-weight:bold}
+      .cover-text .date{font-size:10px;color:#777;margin-top:3px}
+      .cover-score{margin-left:auto;text-align:right}
+      .score-badge{display:inline-block;padding:6px 18px;border-radius:5px;color:#fff;font-size:18px;font-weight:bold}
+      .score-desc{font-size:9px;color:#888;margin-top:3px}
+      .global-sum{margin:10px 16px;background:#f5f4f1;border-radius:5px;padding:7px 10px;font-size:10px;color:#555;line-height:1.5}
+      .block{margin:10px 16px;border:1px solid #e8e8e8;border-radius:6px;overflow:hidden;page-break-inside:avoid}
+      .block-title{background:#f5f4f1;padding:6px 10px;font-size:10px;font-weight:bold;color:#333;border-bottom:1px solid #e8e8e8}
+      .tz-block .tz-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:0;padding:8px 10px 4px}
+      .tz-col{padding:0 8px 8px 0}
+      .tz-cat{font-size:8px;font-weight:bold;color:#aaa;letter-spacing:.08em;margin-bottom:3px;text-transform:uppercase}
+      .tz-row{font-size:10px;color:#444;line-height:1.45;padding:1px 0}
+      .src{color:#ccc;font-size:8px}
+      .render-block{padding:0}
+      .render-top{display:flex;gap:10px;padding:8px 10px}
+      .thumb{width:160px;height:105px;object-fit:cover;border-radius:4px;border:1px solid #ddd;flex-shrink:0}
+      .render-right{flex:1;min-width:0}
+      .render-hdr{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+      .render-num{font-size:10px;color:#888;font-weight:bold}
+      .badge{color:#fff;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:bold}
+      .summary{font-size:10px;color:#555;line-height:1.5}
+      .sub-title{font-size:9px;font-weight:bold;color:#555;background:#fafafa;border-top:1px solid #eee;border-bottom:1px solid #eee;padding:3px 10px;letter-spacing:.05em;text-transform:uppercase}
+      .checks-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:0;padding:4px 6px}
+      .chk{padding:3px 6px;margin:2px;border-radius:3px;background:#fafafa}
+      .chk-top{display:flex;align-items:center;gap:4px;margin-bottom:1px}
+      .chk-icon{font-size:10px}
+      .chk-id{font-size:9px;font-weight:bold}
+      .chk-note{font-size:9px;color:#666;line-height:1.35}
+      .def-list{padding:4px 10px}
+      .def-row{display:flex;gap:7px;align-items:flex-start;padding:3px 0;border-bottom:1px solid #f5f5f5;font-size:10px}
+      .mat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));padding:4px 10px;gap:0}
+      .mat-row{display:flex;align-items:center;gap:6px;padding:2px 0;font-size:10px}
+      .mat-name{flex:1;font-weight:bold}
+      .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;margin-top:2px}
+      .tag{font-size:8px;color:#aaa;font-weight:normal}
+      .dim{font-size:9px;color:#999}
+      @media print{
+        body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+        .tz-block{page-break-after:always}
+        .render-block{page-break-inside:avoid}
+      }`;
+
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Render QA Report</title><style>${css}</style></head><body>
+      <div class="cover">
+        <div class="cover-text">
+          <div class="label">RENDER QA REPORT</div>
+          <div class="title">QA Report</div>
+          <div class="date">${new Date().toLocaleDateString("uk",{year:"numeric",month:"long",day:"numeric"})}</div>
+        </div>
+        ${stdKey?`<div class="cover-score"><div class="score-badge" style="background:${SC[stdKey]}">${stdKey} ${avg}%</div><div class="score-desc">${e(STANDARDS[stdKey].desc)}</div></div>`:""}
+      </div>
+      ${globalSum?`<div class="global-sum">${e(globalSum)}</div>`:""}
+      ${tzHtml}
+      ${rendersHtml}
+    </body></html>`;
+
+    if (window.electronAPI?.savePdf) {
+      window.electronAPI.savePdf(html).then(res => {
+        if (res?.ok) alert(`PDF збережено:\n${res.path}`);
+      }).catch(e => alert("Помилка збереження PDF: " + e.message));
+    } else {
+      const w = window.open("", "_blank");
+      w.document.write(html);
+      w.document.close();
+      setTimeout(() => w.print(), 500);
+    }
+  }
+
+  async function parseTzCards() {
+    if (!anthropicKey.trim()) { setErr("Введіть Anthropic API ключ"); return; }
+    const briefsList = readyFiles(briefs);
+    const refsList = readyFiles(refs);
+    const drawsList = readyFiles(draws);
+    const hasMaterials = briefText.trim() || briefsList.length > 0 || refsList.length > 0 || drawsList.length > 0;
+    if (!hasMaterials) { setTzCards([]); setTzReview(true); return; }
+    setTzParsing(true); setErr("");
+    const mn = matNote([...briefsList, ...drawsList]);
+
+    // Build image index: label → preview URL (matches filesToParts labeling)
+    const imgIndex = {};
+    const indexFiles = (files, label) => {
+      (files || []).forEach((f, fi) => {
+        (f.pages || []).filter(p => p.b64).forEach((pg, pi) => {
+          const key = `${label} ${fi + 1}${pi > 0 ? ` стор.${pi + 1}` : ""}`;
+          if (pg.preview) imgIndex[key.toLowerCase()] = pg.preview;
+        });
+      });
+    };
+    indexFiles(briefsList, "БРИФ");
+    indexFiles(refsList, "РЕФЕРЕНС");
+    indexFiles(drawsList, "КРЕСЛЕННЯ");
+
+    const parts = [{ type: "text", text: `Ти — PM студії 3D-візуалізації. Розбери всі надані матеріали та поверни структурований опис проекту і повний перелік вимог.
+
+ТЗ ТЕКСТ:
+${briefText.trim() || "(дивись прикріплені матеріали)"}${mn}
+
+ЗАВДАННЯ 1 — project_annotation:
+Напиши розгорнутий опис роботи яку потрібно виконати (4-8 речень). Включи:
+• Що саме візуалізується (тип простору/об'єкту, назва якщо є)
+• Площа, планування, кількість приміщень/ракурсів якщо вказано
+• Стиль та атмосфера (скандинавський, класичний, лофт, вечірній/денний тощо)
+• Ключові матеріали та кольорова палітра
+• Тип та характер освітлення
+• Що надано: креслення (які саме), референси, специфікації
+• Особливі вимоги клієнта або технічні обмеження
+• Що художник повинен перевірити особливо уважно
+
+ЗАВДАННЯ 2 — tz_parsed:
+- Кожен пункт = ОДНА конкретна вимога
+- text = ПОВНИЙ опис: назва + матеріал + колір (назва або HEX) + відділка + розмір + марка якщо є
+- НЕ пиши загальні фрази — лише конкретику
+- img_ref: мітка зображення звідки взята вимога (напр. "РЕФЕРЕНС 1 стор.2") або null
+- source: "бриф", "референс", "креслення", "ТЗ"
+- Не вигадуй вимоги яких немає в матеріалах
+- Категорії: "Матеріали та текстури", "Меблі та моделі", "Сезон / атмосфера", "Тип освітлення", "Креслення та планування", "Логотип / написи", "Вимоги клієнта", "Специфічні запити"
+
+ВІДПОВІДАЙ ТІЛЬКИ JSON:
+{"project_annotation":"Візуалізація вітальні площею ~35м² у скандинавському стилі. Денне освітлення через великі вікна зліва, м'які розсіяні тіні. Підлога — дубовий паркет натуральний, стіни — біла матова штукатурка. Меблі: сірий велюровий диван, журнальний столик зі скла та металу. Надано: флорплан з розстановкою меблів та 3 референси атмосфери. Особлива увага — консистентність матеріалів між ракурсами та відповідність розташування меблів плану.","tz_parsed":[{"category":"Матеріали та текстури","items":[{"id":"tz1","text":"Підлога — паркет дуб 180×1200мм, колір натуральний, матовий лак","source":"бриф","img_ref":"БРИФ 1"},{"id":"tz2","text":"Диван — оксамит пудровий рожевий #D4A5A0","source":"референс","img_ref":"РЕФЕРЕНС 1 стор.2"}]}]}` }];
+    parts.push(...filesToParts(briefsList, "БРИФ"));
+    parts.push(...filesToParts(refsList, "РЕФЕРЕНС"));
+    parts.push(...filesToParts(drawsList, "КРЕСЛЕННЯ"));
+    try {
+      const result = await callAPI(parts, 2, anthropicKey);
+      const cards = []; let counter = 1;
+      (result.tz_parsed || []).forEach(group => {
+        (group.items || []).forEach(item => {
+          cards.push({
+            id: item.id || `tz${counter}`,
+            category: group.category || "Загальні вимоги",
+            text: item.text || "",
+            source: item.source || "",
+            imgPreview: item.img_ref ? (imgIndex[item.img_ref.toLowerCase()] || null) : null,
+          });
+          counter++;
+        });
+      });
+      setTzCards(cards);
+      if (result.project_annotation) setTzAnnotation(result.project_annotation);
+    } catch (e) { setErr(`Помилка розбору ТЗ: ${e.message}`); setTzCards([]); }
+    setTzParsing(false); setTzReview(true);
+  }
+
+  async function generateAiRef() {
+    if (!openaiKey.trim()) { setErr("Введіть OpenAI API ключ для генерації AI референсу"); return; }
+    if (tzCards.length === 0) { setErr("Спочатку розберіть ТЗ"); return; }
+    setAiRefLoading(true); setAiRefImage(null); setAiRefErr("");
+    try {
+      // Step 1: Claude builds a DALL-E prompt from the ТЗ cards
+      const tzSummary = tzCards.map(c => `${c.category}: ${c.text}`).join("\n");
+      const promptParts = [{ type: "text", text: `На основі пунктів ТЗ нижче склади короткий prompt для DALL-E 3 (англійською, до 800 символів) для генерації AI референсу інтер'єру. Prompt повинен описувати стиль, матеріали, кольори, атмосферу. Починай одразу з опису сцени без вступних слів.
+
+ТЗ:
+${tzSummary}
+
+ВІДПОВІДАЙ ТІЛЬКИ ТЕКСТОМ ПРОМПТУ (без JSON, без лапок, без пояснень).` }];
+      const promptResp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true", "x-api-key": anthropicKey },
+        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 500, messages: [{ role: "user", content: promptParts }] })
+      });
+      if (!promptResp.ok) throw new Error(`Claude error ${promptResp.status}`);
+      const promptData = await promptResp.json();
+      const dallePrompt = promptData.content?.[0]?.text?.trim() || "";
+      if (!dallePrompt) throw new Error("Claude не повернув промпт");
+
+      // Step 2: DALL-E 3 generates image
+      const imgResp = await fetch("https://api.openai.com/v1/images/generations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${openaiKey.trim()}` },
+        body: JSON.stringify({ model: "dall-e-3", prompt: dallePrompt, n: 1, size: "1024x1024", quality: "standard", response_format: "b64_json" })
+      });
+      if (!imgResp.ok) { const e = await imgResp.json(); throw new Error(e.error?.message || `OpenAI error ${imgResp.status}`); }
+      const imgData = await imgResp.json();
+      const b64 = imgData.data?.[0]?.b64_json;
+      if (!b64) throw new Error("DALL-E не повернув зображення");
+      setAiRefImage(`data:image/png;base64,${b64}`);
+    } catch (e) { setAiRefErr(e.message); }
+    setAiRefLoading(false);
   }
 
   async function loadFromArchivizer() {
@@ -2168,9 +2706,13 @@ ${fileList}
           const text = data.content?.[0]?.text || "";
           const jsonMatch = text.match(/\[[\s\S]*\]/);
           if (jsonMatch) {
-            const parsed = JSON.parse(jsonMatch[0]);
-            parsed.forEach(({ i, cat }) => { categories[i] = cat; });
-            console.log("Claude categorization:", categories);
+            try {
+              const parsed = JSON.parse(jsonMatch[0]);
+              parsed.forEach(({ i, cat }) => { if (typeof i === "number" && cat) categories[i] = cat; });
+              console.log("Claude categorization:", categories);
+            } catch (parseErr) {
+              console.warn("Claude categorization: invalid JSON in response:", parseErr.message, text.slice(0, 200));
+            }
           }
         } catch(e) { console.warn("Claude categorization failed:", e.message); }
       }
@@ -2227,6 +2769,7 @@ ${fileList}
     revBriefs.ref.current = []; revRefs.ref.current = []; revDraws.ref.current = [];
     pairBefores.current = {}; pairAfters.current = {};
     setPairs([{ id: 1, comment: "" }]); setPerData([]); setStatuses([]); setGlobalSum("");
+    setTzCards([]); setTzAnnotation(""); setTzReview(false); setTzParsing(false); setAiRefImage(null); setAiRefLoading(false); setAiRefErr(""); setConsistency(null); setConsistencyLoading(false); clearSession(); setSavedSession(null);
   }
 
   const isRev = mode === "revision";
@@ -2253,6 +2796,14 @@ ${fileList}
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           {step === 2 && sel !== null && <button onClick={() => setSel(null)} style={{ background: "transparent", border: "1px solid #444", color: "#aaa", padding: "5px 12px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 4 }}>← {isRev ? "Раунди" : "Ракурси"}</button>}
           {step === 2 && <button onClick={reset} style={{ background: "transparent", border: "1px solid #444", color: "#aaa", padding: "5px 12px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 4 }}>← Нова перевірка</button>}
+          {step === 2 && perData.some(d => d && !d.error) && <button onClick={generateReport} style={{ background: "transparent", border: "1px solid #27ae60", color: "#27ae60", padding: "5px 12px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 4 }}>📄 PDF</button>}
+          <input
+            type="password"
+            value={openaiKey}
+            onChange={e => saveOpenaiKey(e.target.value)}
+            placeholder="OpenAI key (DALL-E)"
+            style={{ background: "#111", border: `1px solid ${openaiKey ? "#3498db" : "#555"}`, color: "#aaa", padding: "5px 10px", fontSize: 11, fontFamily: "monospace", borderRadius: 4, width: 160, outline: "none" }}
+          />
           <input
             type="password"
             value={anthropicKey}
@@ -2263,7 +2814,46 @@ ${fileList}
         </div>
       </div>
 
-      {step === 1 && (
+      {step === 1 && savedSession && (
+        <div style={{ margin: "0 24px 12px", background: "#fff", border: "1px solid #3498db33", borderRadius: 10, padding: "10px 16px", display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontSize: 13 }}>💾</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#333", fontFamily: "monospace" }}>Є збережена сесія</div>
+            <div style={{ fontSize: 10, color: "#aaa", fontFamily: "monospace" }}>{new Date(savedSession.savedAt).toLocaleString("uk")} · {savedSession.perData?.filter(Boolean).length || 0} ракурсів</div>
+          </div>
+          <button onClick={() => {
+            setMode(savedSession.mode || "first");
+            setPerData(savedSession.perData || []);
+            setGlobalSum(savedSession.globalSum || "");
+            setConsistency(savedSession.consistency || null);
+            if (savedSession.tzCards?.length) setTzCards(savedSession.tzCards);
+            setStep(2); setSavedSession(null);
+          }} style={{ background: "#3498db", color: "#fff", border: "none", padding: "6px 14px", borderRadius: 6, fontSize: 11, fontFamily: "monospace", cursor: "pointer" }}>
+            Відновити →
+          </button>
+          <button onClick={() => { clearSession(); setSavedSession(null); }} style={{ background: "none", border: "1px solid #e0ddd8", color: "#aaa", padding: "6px 10px", borderRadius: 6, fontSize: 11, fontFamily: "monospace", cursor: "pointer" }}>
+            ✕
+          </button>
+        </div>
+      )}
+
+      {step === 1 && tzReview && !isRev && (
+        <TzReviewStep
+          cards={tzCards}
+          onRemove={id => setTzCards(prev => prev.filter(c => c.id !== id))}
+          onEdit={(id, text) => setTzCards(prev => prev.map(c => c.id === id ? { ...c, text } : c))}
+          onBack={() => setTzReview(false)}
+          onProceed={runAnalysis}
+          hasRenders={rImages.length > 0}
+          onGenerateAiRef={generateAiRef}
+          aiRefLoading={aiRefLoading}
+          aiRefImage={aiRefImage}
+          aiRefErr={aiRefErr}
+          hasOpenaiKey={!!openaiKey.trim()}
+          annotation={tzAnnotation}
+        />
+      )}
+      {step === 1 && !tzReview && (
         <div style={{ maxWidth: "100%", width: "100%", padding: "22px 24px", display: "flex", flexDirection: "column", gap: 16, boxSizing: "border-box" }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             {[{ id: "first", icon: "🎯", label: "Перший результат", desc: "Рендер vs ТЗ, референси, специфікація" }, { id: "revision", icon: "🔄", label: "Порівняння раундів", desc: "ДО vs ПІСЛЯ — чи внесені правки" }].map(m => (
@@ -2344,12 +2934,43 @@ ${fileList}
             </div>
           )}
           {err && <div style={{ color: "#e74c3c", fontSize: 12, fontFamily: "monospace", padding: "10px 13px", background: "#fff5f5", borderRadius: 6, border: "1px solid #fcc" }}>{err}</div>}
-          <button onClick={runAnalysis} style={{ background: "#1a1a1a", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: "pointer", borderRadius: 8 }}>
-            {isRev ? "ПОРІВНЯТИ РАУНДИ →" : "ПЕРЕВІРИТИ РЕНДЕРИ →"}
-          </button>
+          {isRev
+            ? <button onClick={runAnalysis} style={{ background: "#1a1a1a", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: "pointer", borderRadius: 8 }}>ПОРІВНЯТИ РАУНДИ →</button>
+            : <button onClick={parseTzCards} disabled={tzParsing} style={{ background: tzParsing ? "#444" : "#1a1a1a", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: tzParsing ? "not-allowed" : "pointer", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                {tzParsing
+                  ? <><div style={{ width: 12, height: 12, border: "1.5px solid #aaa", borderTop: "1.5px solid #fff", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />РОЗБИРАЮ ТЗ…</>
+                  : "РОЗІБРАТИ ТЗ →"}
+              </button>
+          }
         </div>
       )}
 
+      {step === 2 && sel === null && consistencyLoading && (
+        <div style={{ margin: "0 24px 12px", background: "#fff", border: "1px solid #e8e6e1", borderRadius: 10, padding: "12px 16px", display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ width: 14, height: 14, border: "2px solid #3498db", borderTop: "2px solid transparent", borderRadius: "50%", animation: "spin 0.7s linear infinite", flexShrink: 0 }} />
+          <span style={{ fontSize: 11, color: "#888", fontFamily: "monospace" }}>Перевіряю консистентність між ракурсами…</span>
+        </div>
+      )}
+      {step === 2 && sel === null && consistency && !consistency.error && (
+        <div style={{ margin: "0 24px 12px", background: "#fff", border: `1px solid ${consistency.score >= 80 ? "#27ae6033" : consistency.score >= 60 ? "#e67e2233" : "#e74c3c33"}`, borderRadius: 10, overflow: "hidden" }}>
+          <div style={{ padding: "8px 14px", background: "#faf9f7", borderBottom: "1px solid #f0eeea", display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 13 }}>🎬</span>
+            <span style={{ fontSize: 10, fontWeight: 700, color: "#555", fontFamily: "monospace", letterSpacing: "0.08em", flex: 1 }}>КОНСИСТЕНТНІСТЬ ПОСТ-ПРОДАКШНУ</span>
+            <span style={{ fontSize: 12, fontWeight: 700, fontFamily: "monospace", color: consistency.score >= 80 ? "#27ae60" : consistency.score >= 60 ? "#e67e22" : "#e74c3c" }}>{consistency.score}% — {consistency.verdict}</span>
+          </div>
+          {consistency.issues?.length > 0 && (
+            <div style={{ padding: "8px 14px", display: "flex", flexDirection: "column", gap: 4 }}>
+              {consistency.issues.map((issue, i) => (
+                <div key={i} style={{ fontSize: 11, color: "#555", display: "flex", gap: 8, alignItems: "flex-start" }}>
+                  <span style={{ color: "#e67e22", flexShrink: 0 }}>⚠</span>
+                  <span>{issue.description}{issue.renders?.length ? <span style={{ color: "#aaa", fontSize: 10, marginLeft: 6 }}>[ракурси {issue.renders.join(", ")}]</span> : ""}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {consistency.summary && <div style={{ padding: "6px 14px 10px", fontSize: 11, color: "#777", borderTop: "1px solid #f0eeea" }}>{consistency.summary}</div>}
+        </div>
+      )}
       {step === 2 && sel === null && <Grid items={gridItems} perData={perData} statuses={statuses} globalSummary={globalSum} onSelect={setSel} onRetry={mode === "first" ? retryFailed : undefined} mode={mode} />}
       {step === 2 && sel !== null && detailProps && (
         <DetailPage
