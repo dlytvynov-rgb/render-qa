@@ -64,7 +64,14 @@ async function pdfToPages(file, onProg, sig) {
     await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
     let b64 = canvas.toDataURL("image/jpeg", q).split(",")[1], qq = q;
     while (b64.length * 0.75 > 3.5e6 && qq > 0.3) { qq -= 0.08; b64 = canvas.toDataURL("image/jpeg", qq).split(",")[1]; }
-    pages.push({ b64, preview: canvas.toDataURL("image/jpeg", Math.min(qq, 0.75)) });
+    // Extract text layer per page — annotations/labels that reference visual elements on this page
+    let pageText = null;
+    try {
+      const tc = await page.getTextContent();
+      const raw = tc.items.map(it => it.str || "").join(" ").replace(/\s{3,}/g, "  ").trim();
+      if (raw.length > 10) pageText = raw.slice(0, 2000);
+    } catch {}
+    pages.push({ b64, preview: canvas.toDataURL("image/jpeg", Math.min(qq, 0.75)), text: pageText });
     onProg?.(Math.round(i / n * 100));
   }
   return { pages, type: "pdf", filename: file.name };
@@ -296,6 +303,7 @@ async function processFile(file, onProg, sig) {
       return { pages: [], type: "text", filename: file.name, ext: "DOCX", textContent: result.value.slice(0, 12000) };
     } catch { onProg?.(100); return { pages: [], type: "other", filename: file.name, ext: "DOCX", textContent: "[не вдалось прочитати DOCX]" }; }
   }
+  if (nm.endsWith(".pdf")) return pdfToPages(file, onProg, sig);
   if (file.type.startsWith("image/")) return imageToB64(file, onProg, sig);
   onProg?.(100);
   return { pages: [], type: "other", filename: file.name, ext: file.name.split(".").pop().toUpperCase() };
@@ -338,8 +346,14 @@ function filesToParts(files, label) {
     if ((f.type === "excel" || f.type === "dxf" || f.type === "dwg" || f.type === "text") && f.textContent) {
       parts.push({ type: "text", text: `${label} ${fi + 1} [${f.ext || "TEXT"}: ${f.filename}]:\n${f.textContent}` });
     } else {
+      // For each page: send text annotations first (if any), then the image.
+      // This lets Claude correlate "ця текстура на підлогу →" with the adjacent visual.
       (f.pages || []).filter(p => p.b64).forEach((pg, pi) => {
-        parts.push({ type: "text", text: `${label} ${fi + 1}${pi > 0 ? ` стор.${pi + 1}` : ""}:` });
+        const pageLabel = `${label} ${fi + 1}${pi > 0 ? ` стор.${pi + 1}` : ""}`;
+        if (pg.text) {
+          parts.push({ type: "text", text: `${pageLabel} — підписи та анотації на сторінці:\n${pg.text}` });
+        }
+        parts.push({ type: "text", text: `${pageLabel}:` });
         parts.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: pg.b64 } });
       });
     }
@@ -1100,13 +1114,14 @@ function TabBar({ tabs, active, onSelect }) {
 }
 
 // ─── Detail page ──────────────────────────────────────────────────────────────
-function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, status, apiError, onBack, mode, onReview }) {
+function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, status, apiError, onBack, mode, onReview, tzCards = [], tzAnnotation = "", tzClientComments = [] }) {
   const [selR, setSelR] = useState(0);
   const [hovId, setHovId] = useState(null);
   const [visibleIds, setVisibleIds] = useState(null);
   const [groupFilter, setGroupFilter] = useState(null);
   const [irrelevant, setIrrelevant] = useState(new Set()); // "item:0", "corr:1", "defect:2"
   const [reviewing, setReviewing] = useState(false);
+  const [showTz, setShowTz] = useState(false);
 
   const items = data?.items || [];
   const corr = data?.corrections || [];
@@ -1217,6 +1232,11 @@ function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, stat
       <div style={{ background: "#111", color: "#f2f0ec", padding: "10px 18px", display: "flex", alignItems: "center", gap: 12, position: "sticky", top: 0, zIndex: 40, borderBottom: "1px solid #222" }}>
         <button onClick={onBack} style={{ background: "transparent", border: "1px solid #444", color: "#aaa", padding: "4px 11px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 4 }}>← {isRev ? "Раунди" : "Ракурси"}</button>
         <span style={{ fontSize: 11, fontFamily: "monospace", color: "#666" }}>{isRev ? "РАУНД" : "РАКУРС"} {num}{total > 1 ? ` / ${total}` : ""}</span>
+        {tzCards.length > 0 && (
+          <button onClick={() => setShowTz(v => !v)} style={{ background: showTz ? "#27ae60" : "transparent", border: "1px solid #27ae60", color: showTz ? "#fff" : "#27ae60", padding: "4px 11px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 4 }}>
+            📋 ТЗ ({tzCards.length})
+          </button>
+        )}
         <span style={{ flex: 1 }} />
         {data && !status && (
           <span style={{ display: "flex", gap: 6 }}>
@@ -1581,6 +1601,69 @@ function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, stat
           </div>
         )}
       </div>
+
+      {/* ── TZ Drawer ──────────────────────────────────────────────────────── */}
+      {showTz && (
+        <div onClick={() => setShowTz(false)} style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,0.45)" }}>
+          <div onClick={e => e.stopPropagation()} style={{ position: "absolute", top: 0, right: 0, bottom: 0, width: 400, background: "#fff", overflowY: "auto", boxShadow: "-4px 0 32px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column" }}>
+            {/* Header */}
+            <div style={{ padding: "11px 16px", background: "#1a1a1a", display: "flex", alignItems: "center", gap: 10, position: "sticky", top: 0, zIndex: 1, flexShrink: 0 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#f2f0ec", fontFamily: "monospace", flex: 1 }}>📋 ТЗ — {tzCards.length} пунктів</span>
+              <button onClick={() => setShowTz(false)} style={{ background: "none", border: "1px solid #555", color: "#aaa", borderRadius: 4, padding: "3px 9px", cursor: "pointer", fontSize: 10, fontFamily: "monospace" }}>✕</button>
+            </div>
+
+            {/* Project annotation */}
+            {tzAnnotation && (
+              <div style={{ padding: "10px 14px", borderBottom: "1px solid #f0eeea", background: "#faf9f7", flexShrink: 0 }}>
+                <div style={{ fontSize: 9, color: "#aaa", fontFamily: "monospace", letterSpacing: "0.1em", marginBottom: 5 }}>ОПИС ПРОЕКТУ</div>
+                <div style={{ fontSize: 11, color: "#444", lineHeight: 1.65, fontFamily: "monospace" }}>{tzAnnotation}</div>
+              </div>
+            )}
+
+            {/* TZ cards grouped */}
+            {Object.entries(tzCards.reduce((acc, c) => { if (!acc[c.category]) acc[c.category] = []; acc[c.category].push(c); return acc; }, {})).map(([cat, items]) => (
+              <div key={cat} style={{ borderBottom: "1px solid #f0eeea", flexShrink: 0 }}>
+                <div style={{ padding: "7px 14px", background: "#f5f4f1", display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: "#555", fontFamily: "monospace", flex: 1 }}>{cat.toUpperCase()}</span>
+                  <span style={{ fontSize: 9, color: "#ccc", fontFamily: "monospace" }}>{items.length}</span>
+                </div>
+                {items.map((item, i) => (
+                  <div key={i} style={{ padding: "8px 14px 8px 20px", borderBottom: "1px solid #faf8f6", display: "flex", alignItems: "flex-start", gap: 7 }}>
+                    <span style={{ color: "#27ae60", fontSize: 10, marginTop: 3, flexShrink: 0 }}>•</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 11, color: "#333", lineHeight: 1.55 }}>{item.text}</div>
+                      {item.source && <div style={{ fontSize: 9, color: "#ccc", fontFamily: "monospace", marginTop: 1 }}>[{item.source}]</div>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
+
+            {/* Client comments */}
+            {tzClientComments.length > 0 && (
+              <div style={{ flexShrink: 0 }}>
+                <div style={{ padding: "7px 14px", background: "#f5f4f1", borderBottom: "1px solid #f0eeea" }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: "#555", fontFamily: "monospace" }}>💬 КОМЕНТАРІ КЛІЄНТА</span>
+                </div>
+                {Object.entries(tzClientComments.reduce((acc, item) => { (acc[item.page] = acc[item.page] || []).push(item.text); return acc; }, {})).map(([page, texts], gi) => {
+                  const lines = texts.flatMap(t => t.split(/\n/).map(l => l.replace(/^[•\-–—]\s*/, "").trim()).filter(l => l.length > 0));
+                  return (
+                    <div key={gi} style={{ padding: "9px 14px", borderBottom: "1px solid #f5f3ef" }}>
+                      <div style={{ fontSize: 9, color: "#aaa", fontFamily: "monospace", letterSpacing: "0.08em", marginBottom: 5 }}>{page}</div>
+                      {lines.map((line, li) => (
+                        <div key={li} style={{ display: "flex", gap: 7, alignItems: "flex-start", marginBottom: 3 }}>
+                          <span style={{ color: "#bbb", fontSize: 11, flexShrink: 0, marginTop: 2 }}>—</span>
+                          <span style={{ fontSize: 11, color: "#333", lineHeight: 1.55, fontFamily: "monospace" }}>{line}</span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1591,7 +1674,7 @@ const CATEGORY_ICONS = {
   "Тип освітлення": "💡", "Креслення та планування": "📐", "Логотип / написи": "🔤",
   "Вимоги клієнта": "📋", "Специфічні запити": "⭐",
 };
-function TzReviewStep({ cards, onRemove, onEdit, onBack, onProceed, hasRenders, onGenerateAiRef, aiRefLoading, aiRefImage, aiRefErr, hasOpenaiKey, annotation }) {
+function TzReviewStep({ cards, onRemove, onEdit, onBack, onProceed, hasRenders, annotation, clientComments, onSavePdf }) {
   const grouped = {};
   cards.forEach(c => { if (!grouped[c.category]) grouped[c.category] = []; grouped[c.category].push(c); });
   return (
@@ -1607,6 +1690,33 @@ function TzReviewStep({ cards, onRemove, onEdit, onBack, onProceed, hasRenders, 
         <div style={{ background: "#f8f7f4", border: "1px solid #e8e6e1", borderRadius: 10, padding: "12px 16px" }}>
           <div style={{ fontSize: 9, fontWeight: 700, color: "#aaa", fontFamily: "monospace", letterSpacing: "0.1em", marginBottom: 6 }}>ОПИС ПРОЕКТУ</div>
           <div style={{ fontSize: 12, color: "#444", lineHeight: 1.65 }}>{annotation}</div>
+        </div>
+      )}
+      {clientComments?.length > 0 && (
+        <div style={{ background: "#fff", border: "1px solid #e8e6e1", borderRadius: 10, overflow: "hidden" }}>
+          <div style={{ padding: "8px 14px", background: "#faf9f7", borderBottom: "1px solid #f0eeea", display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 13 }}>💬</span>
+            <span style={{ fontSize: 10, fontWeight: 700, color: "#555", fontFamily: "monospace", letterSpacing: "0.1em" }}>КОМЕНТАРІ КЛІЄНТА</span>
+            <span style={{ fontSize: 9, color: "#ccc", fontFamily: "monospace", marginLeft: "auto" }}>{clientComments.length}</span>
+          </div>
+          <div style={{ padding: "10px 14px", display: "flex", flexDirection: "column", gap: 12 }}>
+            {Object.entries(clientComments.reduce((acc, item) => { (acc[item.page] = acc[item.page] || []).push(item.text); return acc; }, {})).map(([page, texts], gi) => {
+              const lines = texts.flatMap(t => t.split(/\n/).map(l => l.replace(/^[•\-–—]\s*/, "").trim()).filter(l => l.length > 0));
+              return (
+                <div key={gi} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <div style={{ fontSize: 9, color: "#aaa", fontFamily: "monospace", letterSpacing: "0.08em", borderBottom: "1px solid #f0eeea", paddingBottom: 4 }}>{page}</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                    {lines.map((line, li) => (
+                      <div key={li} style={{ display: "flex", gap: 7, alignItems: "flex-start" }}>
+                        <span style={{ color: "#bbb", fontSize: 11, flexShrink: 0, marginTop: 2 }}>—</span>
+                        <span style={{ fontSize: 12, fontFamily: "monospace", color: "#333", lineHeight: 1.6 }}>{line}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
       {cards.length === 0 && (
@@ -1645,52 +1755,14 @@ function TzReviewStep({ cards, onRemove, onEdit, onBack, onProceed, hasRenders, 
           ))}
         </div>
       ))}
-      {/* AI Reference section */}
-      <div style={{ background: "#fff", border: "1px solid #e8e6e1", borderRadius: 10, overflow: "hidden" }}>
-        <div style={{ padding: "8px 14px", background: "#faf9f7", borderBottom: "1px solid #f0eeea", display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 14 }}>✨</span>
-          <span style={{ fontSize: 10, fontWeight: 700, color: "#555", fontFamily: "monospace", letterSpacing: "0.1em", flex: 1 }}>AI РЕФЕРЕНС ПО ТЗ</span>
-          {!hasOpenaiKey && <span style={{ fontSize: 9, color: "#e67e22", fontFamily: "monospace" }}>потрібен OpenAI ключ</span>}
-        </div>
-        <div style={{ padding: "10px 14px" }}>
-          {aiRefImage ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <img src={aiRefImage} style={{ width: "100%", borderRadius: 6, border: "1px solid #e8e6e1" }} alt="AI Reference" />
-              <div style={{ display: "flex", gap: 8 }}>
-                <a href={aiRefImage} download="ai-reference.png" target="_blank" rel="noreferrer"
-                  style={{ fontSize: 10, color: "#3498db", fontFamily: "monospace", textDecoration: "none", border: "1px solid #3498db44", padding: "3px 10px", borderRadius: 4 }}>
-                  ↓ Завантажити
-                </a>
-                <button onClick={onGenerateAiRef} disabled={aiRefLoading || !hasOpenaiKey || cards.length === 0}
-                  style={{ fontSize: 10, color: "#888", fontFamily: "monospace", background: "none", border: "1px solid #e0ddd8", padding: "3px 10px", borderRadius: 4, cursor: "pointer" }}>
-                  ↺ Перегенерувати
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ flex: 1, lineHeight: 1.5 }}>
-                {aiRefErr
-                  ? <span style={{ fontSize: 11, color: "#e74c3c", fontFamily: "monospace" }}>⚠️ {aiRefErr}</span>
-                  : <span style={{ fontSize: 11, color: "#aaa" }}>Claude складе prompt по пунктах ТЗ → DALL-E 3 згенерує референс інтер'єру як напрямок для художника</span>
-                }
-              </div>
-              <button onClick={onGenerateAiRef} disabled={aiRefLoading || !hasOpenaiKey || cards.length === 0}
-                style={{ background: hasOpenaiKey && cards.length > 0 ? "#1a1a1a" : "#e8e6e1", color: hasOpenaiKey && cards.length > 0 ? "#f2f0ec" : "#aaa", border: "none", padding: "10px 18px", cursor: hasOpenaiKey && cards.length > 0 ? "pointer" : "not-allowed", fontSize: 11, fontFamily: "monospace", borderRadius: 6, flexShrink: 0, display: "flex", alignItems: "center", gap: 6 }}>
-                {aiRefLoading ? <><span style={{ display: "inline-block", width: 10, height: 10, border: "1.5px solid #fff", borderTop: "1.5px solid transparent", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} /> Генерую...</> : "✨ Згенерувати"}
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {!hasRenders && (
+{!hasRenders && (
         <div style={{ background: "#fff5f5", border: "1px solid #e74c3c44", borderRadius: 8, padding: "10px 14px", fontSize: 11, color: "#e74c3c", fontFamily: "monospace" }}>
           ⚠️ Рендери не завантажені. Поверніться назад та додайте рендери для аналізу.
         </div>
       )}
       <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
         <button onClick={onBack} style={{ background: "transparent", border: "1px solid #ddd", color: "#888", padding: "12px 20px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 8 }}>← Назад</button>
+        <button onClick={onSavePdf} style={{ background: "transparent", border: "1px solid #27ae60", color: "#27ae60", padding: "12px 16px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 8 }}>📄 PDF</button>
         <button onClick={onProceed} disabled={!hasRenders} style={{ flex: 1, background: hasRenders ? "#1a1a1a" : "#ccc", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: hasRenders ? "pointer" : "not-allowed", borderRadius: 8 }}>
           {cards.length > 0 ? `АНАЛІЗУВАТИ РЕНДЕРИ (${cards.length} пунктів ТЗ) →` : "АНАЛІЗУВАТИ РЕНДЕРИ →"}
         </button>
@@ -1893,16 +1965,14 @@ export default function App() {
   const [archivizerUrl, setArchivizerUrl] = useState("");
   const [archivizerStatus, setArchivizerStatus] = useState(null);
   const [tzCards, setTzCards] = useState([]); // [{id, category, text, source, imgPreview}]
-  const [tzAnnotation, setTzAnnotation] = useState(""); // розгорнутий опис проекту
+  const [tzAnnotation, setTzAnnotation] = useState("");
+  const [tzClientComments, setTzClientComments] = useState([]); // [{page, text}] // розгорнутий опис проекту
   const [tzReview, setTzReview] = useState(false);
   const [tzParsing, setTzParsing] = useState(false);
   const cachedPartsRef = useRef(null); // зберігає cacheParts після runAnalysis для retry
   const analysisRunningRef = useRef(false);
   const [openaiKey, setOpenaiKey] = useState(() => { try { return localStorage.getItem("openai_api_key") || ""; } catch { return ""; } });
   const saveOpenaiKey = k => { setOpenaiKey(k); try { localStorage.setItem("openai_api_key", k); } catch {} };
-  const [aiRefImage, setAiRefImage] = useState(null); // generated DALL-E image data url
-  const [aiRefLoading, setAiRefLoading] = useState(false);
-  const [aiRefErr, setAiRefErr] = useState("");
 
   const renders = useFileList(); const briefs = useFileList(); const refs = useFileList(); const draws = useFileList();
   const revBriefs = useFileList(); const revRefs = useFileList(); const revDraws = useFileList();
@@ -2154,6 +2224,8 @@ ${hasRefs ? "• Відповідність референсам: настрій
 
 ЗАЛІЗНЕ ПРАВИЛО: якщо ТЗ каже "червоний велюр" — є тільки два результати: "виконано" або "не виконано — замінити на червоний велюр". ЗАБОРОНЕНО пропонувати: "схоже підійде", "можна замінити на", "альтернативно", "також вписується в палітру". Будь-яка зміна вимоги — рішення тільки клієнта і PM.
 
+ФОРМАТ МАТЕРІАЛІВ ТЗ: PDF-сторінки надаються парами — спочатку блок "підписи та анотації на сторінці" (текстовий шар), потім зображення тієї самої сторінки. Вони єдині: підпис "ця текстура на підлогу" з текстового блоку — це опис стрілки або виноски що ти бачиш на сусідньому зображенні. Використовуй обидва разом для точного зчитування вимог клієнта.
+
 ${tzSection}
 
 ${ZONE_PROMPT}
@@ -2247,7 +2319,7 @@ ${JSON_SCHEMA}` }];
           if (p.globalSummary) setGlobalSum(p.globalSummary);
         } catch (e) { results[ri] = { items: [], corrections: [], defects: [], materials: [], quality: null, error: e.message }; }
         setPerData([...results]);
-        saveSession({ savedAt: new Date().toISOString(), mode, perData: results, globalSum, tzCards: tzCards.map(c => ({ ...c, imgPreview: null })) });
+        saveSession({ savedAt: new Date().toISOString(), mode, perData: results, globalSum, tzCards: tzCards.map(c => ({ ...c, imgPreview: null })), tzAnnotation, tzClientComments });
         setStatuses(prev => prev.map((s, i) => i === ri ? null : s));
         if (ri < rImages.length - 1) await new Promise(r => setTimeout(r, 1500));
       }
@@ -2283,7 +2355,7 @@ ${summaries}
           const cp = await callAPI(consParts, 1, anthropicKey);
           const cons = cp.consistency || null;
           setConsistency(cons);
-          saveSession({ savedAt: new Date().toISOString(), mode, perData: results, globalSum, consistency: cons, tzCards: tzCards.map(c => ({ ...c, imgPreview: null })) });
+          saveSession({ savedAt: new Date().toISOString(), mode, perData: results, globalSum, consistency: cons, tzCards: tzCards.map(c => ({ ...c, imgPreview: null })), tzAnnotation, tzClientComments });
         } catch (e) { setConsistency({ error: e.message }); }
         setConsistencyLoading(false);
       }
@@ -2316,6 +2388,93 @@ ${summaries}
       setPerData([...results]);
       setStatuses(prev => prev.map((s, i) => i === ri ? null : s));
       if (ri !== failedIdxs[failedIdxs.length - 1]) await new Promise(r => setTimeout(r, 1500));
+    }
+  }
+
+  function generateTzReport() {
+    const e = s => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+    const annotationHtml = tzAnnotation ? `
+      <div class="block">
+        <div class="block-title">📝 Опис проекту</div>
+        <div class="annotation">${e(tzAnnotation)}</div>
+      </div>` : "";
+
+    const commentsHtml = tzClientComments.length > 0 ? `
+      <div class="block">
+        <div class="block-title">💬 Коментарі клієнта</div>
+        <div class="comments-body">
+          ${Object.entries(tzClientComments.reduce((acc, item) => { (acc[item.page] = acc[item.page] || []).push(item.text); return acc; }, {})).map(([page, texts]) => {
+            const lines = texts.flatMap(t => t.split(/\n/).map(l => l.replace(/^[•\-–—]\s*/, "").trim()).filter(l => l.length > 0));
+            return `<div class="comment-group">
+              <div class="comment-page">${e(page)}</div>
+              ${lines.map(l => `<div class="comment-line">— ${e(l)}</div>`).join("")}
+            </div>`;
+          }).join("")}
+        </div>
+      </div>` : "";
+
+    const grouped = tzCards.reduce((acc, c) => { if (!acc[c.category]) acc[c.category] = []; acc[c.category].push(c); return acc; }, {});
+    const tzHtml = tzCards.length > 0 ? `
+      <div class="block">
+        <div class="block-title">📋 Пункти ТЗ (${tzCards.length})</div>
+        <div class="tz-grid">
+          ${Object.entries(grouped).map(([cat, items]) => `
+            <div class="tz-col">
+              <div class="tz-cat">${e(cat)}</div>
+              ${items.map(it => `<div class="tz-row">• ${e(it.text)}${it.source ? ` <span class="src">[${e(it.source)}]</span>` : ""}</div>`).join("")}
+            </div>`).join("")}
+        </div>
+      </div>` : "";
+
+    const aiHtml = "";
+
+    const css = `
+      *{box-sizing:border-box;margin:0;padding:0}
+      body{font-family:Arial,sans-serif;font-size:11px;color:#333;background:#fff;padding:0}
+      .cover{background:#1a1a1a;color:#f2f0ec;padding:24px}
+      .cover .label{font-size:9px;color:#888;letter-spacing:.15em;margin-bottom:4px}
+      .cover .title{font-size:22px;font-weight:bold}
+      .cover .date{font-size:10px;color:#888;margin-top:3px}
+      .block{margin:10px 16px;border:1px solid #e8e8e8;border-radius:6px;overflow:hidden;page-break-inside:avoid}
+      .block-title{background:#f5f4f1;padding:6px 10px;font-size:10px;font-weight:bold;color:#333;border-bottom:1px solid #e8e8e8}
+      .annotation{padding:10px 12px;font-size:11px;color:#444;line-height:1.65}
+      .comments-body{padding:8px 12px;display:flex;flex-direction:column;gap:10px}
+      .comment-group{display:flex;flex-direction:column;gap:3px}
+      .comment-page{font-size:8px;color:#aaa;letter-spacing:.08em;text-transform:uppercase;margin-bottom:2px}
+      .comment-line{font-size:11px;color:#333;line-height:1.6;padding-left:4px}
+      .tz-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:0;padding:8px 10px 4px}
+      .tz-col{padding:0 8px 8px 0}
+      .tz-cat{font-size:8px;font-weight:bold;color:#aaa;letter-spacing:.08em;margin-bottom:3px;text-transform:uppercase}
+      .tz-row{font-size:10px;color:#444;line-height:1.45;padding:1px 0}
+      .src{color:#ccc;font-size:8px}
+      .ai-imgs{padding:10px 12px;display:flex;flex-direction:column;gap:10px}
+      .ai-img-wrap{display:flex;flex-direction:column;gap:4px}
+      .ai-label{font-size:8px;color:#aaa;letter-spacing:.08em;text-transform:uppercase}
+      .ai-img{width:100%;border-radius:5px;border:1px solid #e8e8e8}
+      @media print{
+        body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+        .block{page-break-inside:avoid}
+      }`;
+
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>ТЗ Розбір</title><style>${css}</style></head><body>
+      <div class="cover">
+        <div class="label">РОЗБІР ТЗ</div>
+        <div class="title">Технічне завдання</div>
+        <div class="date">${new Date().toLocaleDateString("uk", { year: "numeric", month: "long", day: "numeric" })}</div>
+      </div>
+      ${annotationHtml}${commentsHtml}${tzHtml}${aiHtml}
+    </body></html>`;
+
+    if (window.electronAPI?.savePdf) {
+      window.electronAPI.savePdf(html).then(res => {
+        if (res?.ok) alert(`PDF збережено:\n${res.path}`);
+      }).catch(err => alert("Помилка: " + err.message));
+    } else {
+      const w = window.open("", "_blank");
+      w.document.write(html);
+      w.document.close();
+      setTimeout(() => w.print(), 500);
     }
   }
 
@@ -2493,6 +2652,8 @@ ${summaries}
 
     const parts = [{ type: "text", text: `Ти — PM студії 3D-візуалізації. Розбери всі надані матеріали та поверни структурований опис проекту і повний перелік вимог.
 
+ВАЖЛИВО — формат матеріалів: PDF-сторінки надаються парами: спочатку блок "підписи та анотації на сторінці" (витягнутий текстовий шар), потім зображення тієї ж сторінки. Текст і зображення — це ОДНА сторінка. Стрілки, підписи, виноски на зображенні — це ті самі слова що ти бачиш у текстовому блоці поруч. Використовуй це для точного розуміння що куди застосовується.
+
 ТЗ ТЕКСТ:
 ${briefText.trim() || "(дивись прикріплені матеріали)"}${mn}
 
@@ -2516,8 +2677,18 @@ ${briefText.trim() || "(дивись прикріплені матеріали)"
 - Не вигадуй вимоги яких немає в матеріалах
 - Категорії: "Матеріали та текстури", "Меблі та моделі", "Сезон / атмосфера", "Тип освітлення", "Креслення та планування", "Логотип / написи", "Вимоги клієнта", "Специфічні запити"
 
+ЗАВДАННЯ 3 — client_comments:
+Уважно проглянь кожну сторінку і знайди ВСІ коментарі/побажання клієнта — вони можуть бути:
+- в рамках, прямокутниках, обведених блоках
+- просто як текст на сторінці (підписи, нотатки, побажання)
+- стрілки з підписами, виносками
+- будь-який текст що виглядає як коментар або вимога клієнта
+Кожен окремий коментар/блок = окремий елемент масиву.
+- page: мітка сторінки (напр. "БРИФ 1", "БРИФ 1 стор.2")
+- text: точний текст дослівно, нічого не змінюй, не скорочуй, не додавай
+
 ВІДПОВІДАЙ ТІЛЬКИ JSON:
-{"project_annotation":"Візуалізація вітальні площею ~35м² у скандинавському стилі. Денне освітлення через великі вікна зліва, м'які розсіяні тіні. Підлога — дубовий паркет натуральний, стіни — біла матова штукатурка. Меблі: сірий велюровий диван, журнальний столик зі скла та металу. Надано: флорплан з розстановкою меблів та 3 референси атмосфери. Особлива увага — консистентність матеріалів між ракурсами та відповідність розташування меблів плану.","tz_parsed":[{"category":"Матеріали та текстури","items":[{"id":"tz1","text":"Підлога — паркет дуб 180×1200мм, колір натуральний, матовий лак","source":"бриф","img_ref":"БРИФ 1"},{"id":"tz2","text":"Диван — оксамит пудровий рожевий #D4A5A0","source":"референс","img_ref":"РЕФЕРЕНС 1 стор.2"}]}]}` }];
+{"project_annotation":"Візуалізація вітальні площею ~35м² у скандинавському стилі. Денне освітлення через великі вікна зліва, м'які розсіяні тіні. Підлога — дубовий паркет натуральний, стіни — біла матова штукатурка. Меблі: сірий велюровий диван, журнальний столик зі скла та металу. Надано: флорплан з розстановкою меблів та 3 референси атмосфери. Особлива увага — консистентність матеріалів між ракурсами та відповідність розташування меблів плану.","client_comments":[{"page":"БРИФ 1","text":"Диван має бути пудрово-рожевий, не бежевий. Підлога тільки дуб, без імітацій."},{"page":"БРИФ 1 стор.2","text":"Штори обов'язково — довгі, до підлоги, колір слонова кістка."}],"tz_parsed":[{"category":"Матеріали та текстури","items":[{"id":"tz1","text":"Підлога — паркет дуб 180×1200мм, колір натуральний, матовий лак","source":"бриф","img_ref":"БРИФ 1"},{"id":"tz2","text":"Диван — оксамит пудровий рожевий #D4A5A0","source":"референс","img_ref":"РЕФЕРЕНС 1 стор.2"}]}]}` }];
     parts.push(...filesToParts(briefsList, "БРИФ"));
     parts.push(...filesToParts(refsList, "РЕФЕРЕНС"));
     parts.push(...filesToParts(drawsList, "КРЕСЛЕННЯ"));
@@ -2538,49 +2709,12 @@ ${briefText.trim() || "(дивись прикріплені матеріали)"
       });
       setTzCards(cards);
       if (result.project_annotation) setTzAnnotation(result.project_annotation);
+      if (result.client_comments?.length) setTzClientComments(result.client_comments);
     } catch (e) { setErr(`Помилка розбору ТЗ: ${e.message}`); setTzCards([]); }
     setTzParsing(false); setTzReview(true);
   }
 
-  async function generateAiRef() {
-    if (!openaiKey.trim()) { setErr("Введіть OpenAI API ключ для генерації AI референсу"); return; }
-    if (tzCards.length === 0) { setErr("Спочатку розберіть ТЗ"); return; }
-    setAiRefLoading(true); setAiRefImage(null); setAiRefErr("");
-    try {
-      // Step 1: Claude builds a DALL-E prompt from the ТЗ cards
-      const tzSummary = tzCards.map(c => `${c.category}: ${c.text}`).join("\n");
-      const promptParts = [{ type: "text", text: `На основі пунктів ТЗ нижче склади короткий prompt для DALL-E 3 (англійською, до 800 символів) для генерації AI референсу інтер'єру. Prompt повинен описувати стиль, матеріали, кольори, атмосферу. Починай одразу з опису сцени без вступних слів.
-
-ТЗ:
-${tzSummary}
-
-ВІДПОВІДАЙ ТІЛЬКИ ТЕКСТОМ ПРОМПТУ (без JSON, без лапок, без пояснень).` }];
-      const promptResp = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true", "x-api-key": anthropicKey },
-        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 500, messages: [{ role: "user", content: promptParts }] })
-      });
-      if (!promptResp.ok) throw new Error(`Claude error ${promptResp.status}`);
-      const promptData = await promptResp.json();
-      const dallePrompt = promptData.content?.[0]?.text?.trim() || "";
-      if (!dallePrompt) throw new Error("Claude не повернув промпт");
-
-      // Step 2: DALL-E 3 generates image
-      const imgResp = await fetch("https://api.openai.com/v1/images/generations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${openaiKey.trim()}` },
-        body: JSON.stringify({ model: "dall-e-3", prompt: dallePrompt, n: 1, size: "1024x1024", quality: "standard", response_format: "b64_json" })
-      });
-      if (!imgResp.ok) { const e = await imgResp.json(); throw new Error(e.error?.message || `OpenAI error ${imgResp.status}`); }
-      const imgData = await imgResp.json();
-      const b64 = imgData.data?.[0]?.b64_json;
-      if (!b64) throw new Error("DALL-E не повернув зображення");
-      setAiRefImage(`data:image/png;base64,${b64}`);
-    } catch (e) { setAiRefErr(e.message); }
-    setAiRefLoading(false);
-  }
-
-  async function loadFromArchivizer() {
+async function loadFromArchivizer() {
     if (!archivizerToken.trim()) { setArchivizerStatus({ error: "Введіть Archivizer токен" }); return; }
     if (!archivizerUrl.trim()) { setArchivizerStatus({ error: "Введіть посилання на задачу" }); return; }
     const match = archivizerUrl.match(/tasks\/([^/?#\s]+)/);
@@ -2765,7 +2899,7 @@ ${fileList}
     revBriefs.ref.current = []; revRefs.ref.current = []; revDraws.ref.current = [];
     pairBefores.current = {}; pairAfters.current = {};
     setPairs([{ id: 1, comment: "" }]); setPerData([]); setStatuses([]); setGlobalSum("");
-    setTzCards([]); setTzAnnotation(""); setTzReview(false); setTzParsing(false); setAiRefImage(null); setAiRefLoading(false); setAiRefErr(""); setConsistency(null); setConsistencyLoading(false); clearSession(); setSavedSession(null);
+    setTzCards([]); setTzAnnotation(""); setTzClientComments([]); setTzReview(false); setTzParsing(false); setConsistency(null); setConsistencyLoading(false); clearSession(); setSavedSession(null);
   }
 
   const isRev = mode === "revision";
@@ -2823,6 +2957,8 @@ ${fileList}
             setGlobalSum(savedSession.globalSum || "");
             setConsistency(savedSession.consistency || null);
             if (savedSession.tzCards?.length) setTzCards(savedSession.tzCards);
+            if (savedSession.tzAnnotation) setTzAnnotation(savedSession.tzAnnotation);
+            if (savedSession.tzClientComments?.length) setTzClientComments(savedSession.tzClientComments);
             setStep(2); setSavedSession(null);
           }} style={{ background: "#3498db", color: "#fff", border: "none", padding: "6px 14px", borderRadius: 6, fontSize: 11, fontFamily: "monospace", cursor: "pointer" }}>
             Відновити →
@@ -2841,12 +2977,9 @@ ${fileList}
           onBack={() => setTzReview(false)}
           onProceed={runAnalysis}
           hasRenders={rImages.length > 0}
-          onGenerateAiRef={generateAiRef}
-          aiRefLoading={aiRefLoading}
-          aiRefImage={aiRefImage}
-          aiRefErr={aiRefErr}
-          hasOpenaiKey={!!openaiKey.trim()}
           annotation={tzAnnotation}
+          clientComments={tzClientComments}
+          onSavePdf={generateTzReport}
         />
       )}
       {step === 1 && !tzReview && (
@@ -2967,6 +3100,32 @@ ${fileList}
           {consistency.summary && <div style={{ padding: "6px 14px 10px", fontSize: 11, color: "#777", borderTop: "1px solid #f0eeea" }}>{consistency.summary}</div>}
         </div>
       )}
+      {step === 2 && sel === null && tzClientComments.length > 0 && (
+        <div style={{ margin: "0 24px 12px", background: "#fff", border: "1px solid #e8e6e1", borderRadius: 10, overflow: "hidden" }}>
+          <div style={{ padding: "8px 14px", background: "#faf9f7", borderBottom: "1px solid #f0eeea", display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 13 }}>💬</span>
+            <span style={{ fontSize: 10, fontWeight: 700, color: "#555", fontFamily: "monospace", letterSpacing: "0.1em" }}>КОМЕНТАРІ КЛІЄНТА</span>
+          </div>
+          <div style={{ padding: "10px 14px", display: "flex", flexDirection: "column", gap: 12 }}>
+            {Object.entries(tzClientComments.reduce((acc, item) => { (acc[item.page] = acc[item.page] || []).push(item.text); return acc; }, {})).map(([page, texts], gi) => {
+              const lines = texts.flatMap(t => t.split(/\n/).map(l => l.replace(/^[•\-–—]\s*/, "").trim()).filter(l => l.length > 0));
+              return (
+                <div key={gi} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <div style={{ fontSize: 9, color: "#aaa", fontFamily: "monospace", letterSpacing: "0.08em", borderBottom: "1px solid #f0eeea", paddingBottom: 4 }}>{page}</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                    {lines.map((line, li) => (
+                      <div key={li} style={{ display: "flex", gap: 7, alignItems: "flex-start" }}>
+                        <span style={{ color: "#bbb", fontSize: 11, flexShrink: 0, marginTop: 2 }}>—</span>
+                        <span style={{ fontSize: 12, fontFamily: "monospace", color: "#333", lineHeight: 1.6 }}>{line}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {step === 2 && sel === null && <Grid items={gridItems} perData={perData} statuses={statuses} globalSummary={globalSum} onSelect={setSel} onRetry={mode === "first" ? retryFailed : undefined} mode={mode} />}
       {step === 2 && sel !== null && detailProps && (
         <DetailPage
@@ -2980,6 +3139,9 @@ ${fileList}
           apiError={perData[sel]?.error || null}
           onBack={() => setSel(null)}
           mode={mode}
+          tzCards={tzCards}
+          tzAnnotation={tzAnnotation}
+          tzClientComments={tzClientComments}
           onReview={async (excluded) => {
             const ri = sel;
             const rImages = readyFiles(renders).filter(f => f.pages?.some(p => p.b64));
