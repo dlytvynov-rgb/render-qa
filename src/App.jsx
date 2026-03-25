@@ -320,7 +320,10 @@ function useFileList() {
     ref.current = [...ref.current, { _id: id, _loading: true, _progress: 0, _ctrl: ctrl, filename: file.name, preview: null, pages: [], type: null }];
     bump();
     try {
-      const d = await processFile(file, pct => { ref.current = ref.current.map(x => x._id === id ? { ...x, _progress: pct } : x); bump(); }, ctrl.signal);
+      // Copy file data into memory immediately to release the OS file handle on Windows
+      const buf = await file.arrayBuffer();
+      const fileCopy = new File([buf], file.name, { type: file.type });
+      const d = await processFile(fileCopy, pct => { ref.current = ref.current.map(x => x._id === id ? { ...x, _progress: pct } : x); bump(); }, ctrl.signal);
       ref.current = ref.current.map(x => x._id === id ? { ...d, _id: id, _loading: false, _done: true } : x);
     } catch (e) {
       if (e.name === "AbortError") ref.current = ref.current.filter(x => x._id !== id);
@@ -2406,6 +2409,27 @@ ${summaries}
     }
   }
 
+  function openPrintWindow(html, filename) {
+    if (window.electronAPI?.savePdf) {
+      window.electronAPI.savePdf(html).then(res => {
+        if (res?.ok) alert(`PDF збережено:\n${res.path}`);
+      }).catch(err => alert("Помилка: " + err.message));
+      return;
+    }
+    const bar = `<div id="print-bar" style="position:fixed;top:0;left:0;right:0;z-index:9999;background:#1a1a1a;color:#f2f0ec;padding:10px 20px;display:flex;align-items:center;gap:14px;font-family:monospace;font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,.4)">
+      <span style="flex:1">📄 Готово до збереження — <b>${filename}</b></span>
+      <span style="color:#aaa;font-size:11px">Оберіть принтер <b>"Save as PDF"</b> або натисніть кнопку →</span>
+      <button onclick="window.print()" style="background:#27ae60;color:#fff;border:none;padding:7px 18px;border-radius:5px;font-family:monospace;font-size:12px;cursor:pointer;font-weight:bold">⬇ Зберегти PDF</button>
+      <button onclick="document.getElementById('print-bar').remove()" style="background:transparent;color:#888;border:1px solid #444;padding:7px 12px;border-radius:5px;font-family:monospace;font-size:11px;cursor:pointer">✕</button>
+    </div>
+    <div style="height:52px"></div>
+    <style>@media print{#print-bar,#print-bar+div{display:none!important}}</style>`;
+    const fullHtml = html.replace("<body>", "<body>" + bar);
+    const w = window.open("", "_blank");
+    w.document.write(fullHtml);
+    w.document.close();
+  }
+
   function generateTzReport() {
     const e = s => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
@@ -2433,21 +2457,31 @@ ${summaries}
     const tzHtml = tzCards.length > 0 ? `
       <div class="block">
         <div class="block-title">📋 Пункти ТЗ (${tzCards.length})</div>
-        <div class="tz-grid">
+        <div class="tz-sections">
           ${Object.entries(grouped).map(([cat, items]) => `
-            <div class="tz-col">
+            <div class="tz-section">
               <div class="tz-cat">${e(cat)}</div>
-              ${items.map(it => `<div class="tz-row">• ${e(it.text)}${it.source ? ` <span class="src">[${e(it.source)}]</span>` : ""}</div>`).join("")}
+              <div class="tz-items">
+                ${items.map(it => `
+                  <div class="tz-card">
+                    ${it.imgPreview ? `<img class="tz-thumb" src="${it.imgPreview}" alt="ref" />` : ""}
+                    <div class="tz-card-body">
+                      <div class="tz-text">${e(it.text)}</div>
+                      <div class="tz-meta">
+                        ${it.source ? `<span class="src">[${e(it.source)}]</span>` : ""}
+                        ${it.link ? `<a class="tz-link" href="${e(it.link)}">${e(it.link.replace(/^https?:\/\//, ""))}</a>` : ""}
+                      </div>
+                    </div>
+                  </div>`).join("")}
+              </div>
             </div>`).join("")}
         </div>
       </div>` : "";
 
-    const aiHtml = "";
-
     const css = `
       *{box-sizing:border-box;margin:0;padding:0}
       body{font-family:Arial,sans-serif;font-size:11px;color:#333;background:#fff;padding:0}
-      .cover{background:#1a1a1a;color:#f2f0ec;padding:24px}
+      .cover{background:#1a1a1a;color:#f2f0ec;padding:24px 28px}
       .cover .label{font-size:9px;color:#888;letter-spacing:.15em;margin-bottom:4px}
       .cover .title{font-size:22px;font-weight:bold}
       .cover .date{font-size:10px;color:#888;margin-top:3px}
@@ -2458,18 +2492,21 @@ ${summaries}
       .comment-group{display:flex;flex-direction:column;gap:3px}
       .comment-page{font-size:8px;color:#aaa;letter-spacing:.08em;text-transform:uppercase;margin-bottom:2px}
       .comment-line{font-size:11px;color:#333;line-height:1.6;padding-left:4px}
-      .tz-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:0;padding:8px 10px 4px}
-      .tz-col{padding:0 8px 8px 0}
-      .tz-cat{font-size:8px;font-weight:bold;color:#aaa;letter-spacing:.08em;margin-bottom:3px;text-transform:uppercase}
-      .tz-row{font-size:10px;color:#444;line-height:1.45;padding:1px 0}
-      .src{color:#ccc;font-size:8px}
-      .ai-imgs{padding:10px 12px;display:flex;flex-direction:column;gap:10px}
-      .ai-img-wrap{display:flex;flex-direction:column;gap:4px}
-      .ai-label{font-size:8px;color:#aaa;letter-spacing:.08em;text-transform:uppercase}
-      .ai-img{width:100%;border-radius:5px;border:1px solid #e8e8e8}
+      .tz-sections{padding:10px 12px;display:flex;flex-direction:column;gap:14px}
+      .tz-section{}
+      .tz-cat{font-size:8px;font-weight:bold;color:#aaa;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px;padding-bottom:3px;border-bottom:1px solid #f0eeea}
+      .tz-items{display:flex;flex-direction:column;gap:5px}
+      .tz-card{display:flex;align-items:flex-start;gap:8px;padding:5px 6px;border-radius:4px;background:#fafaf8;border:1px solid #f0eeea}
+      .tz-thumb{width:64px;height:46px;object-fit:cover;border-radius:3px;border:1px solid #e8e6e1;flex-shrink:0}
+      .tz-card-body{flex:1;min-width:0}
+      .tz-text{font-size:10.5px;color:#333;line-height:1.5}
+      .tz-meta{display:flex;align-items:center;gap:8px;margin-top:3px;flex-wrap:wrap}
+      .src{color:#bbb;font-size:8px}
+      .tz-link{color:#3498db;font-size:8px;text-decoration:none;word-break:break-all}
       @media print{
         body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
         .block{page-break-inside:avoid}
+        .tz-section{page-break-inside:avoid}
       }`;
 
     const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>ТЗ Розбір</title><style>${css}</style></head><body>
@@ -2478,19 +2515,10 @@ ${summaries}
         <div class="title">Технічне завдання</div>
         <div class="date">${new Date().toLocaleDateString("uk", { year: "numeric", month: "long", day: "numeric" })}</div>
       </div>
-      ${annotationHtml}${commentsHtml}${tzHtml}${aiHtml}
+      ${annotationHtml}${commentsHtml}${tzHtml}
     </body></html>`;
 
-    if (window.electronAPI?.savePdf) {
-      window.electronAPI.savePdf(html).then(res => {
-        if (res?.ok) alert(`PDF збережено:\n${res.path}`);
-      }).catch(err => alert("Помилка: " + err.message));
-    } else {
-      const w = window.open("", "_blank");
-      w.document.write(html);
-      w.document.close();
-      setTimeout(() => w.print(), 500);
-    }
+    openPrintWindow(html, `RenderQA_TZ_${new Date().toISOString().slice(0,10)}.pdf`);
   }
 
   function generateReport() {
@@ -2629,16 +2657,7 @@ ${summaries}
       ${rendersHtml}
     </body></html>`;
 
-    if (window.electronAPI?.savePdf) {
-      window.electronAPI.savePdf(html).then(res => {
-        if (res?.ok) alert(`PDF збережено:\n${res.path}`);
-      }).catch(e => alert("Помилка збереження PDF: " + e.message));
-    } else {
-      const w = window.open("", "_blank");
-      w.document.write(html);
-      w.document.close();
-      setTimeout(() => w.print(), 500);
-    }
+    openPrintWindow(html, `RenderQA_Report_${new Date().toISOString().slice(0,10)}.pdf`);
   }
 
   async function parseTzCards() {
