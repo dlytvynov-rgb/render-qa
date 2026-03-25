@@ -1,16 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 
-// ─── jsPDF ────────────────────────────────────────────────────────────────────
-async function loadJsPDF() {
-  if (window.jspdf) return window.jspdf.jsPDF;
-  await new Promise((res, rej) => {
-    const s = document.createElement("script");
-    s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
-    s.onload = res; s.onerror = rej; document.head.appendChild(s);
-  });
-  return window.jspdf.jsPDF;
-}
-
 // ─── SheetJS ──────────────────────────────────────────────────────────────────
 async function loadXLSX() {
   if (window.XLSX) return window.XLSX;
@@ -70,7 +59,7 @@ async function pdfToPages(file, onProg, sig) {
       const tc = await page.getTextContent();
       const raw = tc.items.map(it => it.str || "").join(" ").replace(/\s{3,}/g, "  ").trim();
       if (raw.length > 10) pageText = raw.slice(0, 4000);
-    } catch {}
+    } catch { /* ignore */ }
     pages.push({ b64, preview: canvas.toDataURL("image/jpeg", Math.min(qq, 0.75)), text: pageText });
     onProg?.(Math.round(i / n * 100));
   }
@@ -167,7 +156,7 @@ async function parseDWGBinary(file) {
 
   // Класифікація рядків
   const layers = useful.filter(s =>
-    /^[A-Z0-9_\-]+$/.test(s) && s.length <= 30 && !s.includes(" ")
+    /^[A-Z0-9_-]+$/.test(s) && s.length <= 30 && !s.includes(" ")
   ).slice(0, 40);
 
   const dims = useful.filter(s =>
@@ -715,7 +704,7 @@ function DwgSlot({ files, onAddDwg, onRemove, onConverted }) {
   const [ccResults, setCcResults] = useState({});
   const [errors, setErrors] = useState({});
 
-  const saveKey = k => { setApiKey(k); try { localStorage.setItem("cc_api_key", k); } catch {} };
+  const saveKey = k => { setApiKey(k); try { localStorage.setItem("cc_api_key", k); } catch { /* ignore */ } };
 
   const handleFiles = fs => Array.from(fs).forEach(f => {
     const nm = f.name.toLowerCase();
@@ -765,7 +754,6 @@ function DwgSlot({ files, onAddDwg, onRemove, onConverted }) {
             const isDwg = f.type === "dwg";
             const isDone = ccResults[id];
             const hasText = f.textContent && !f.textContent.includes("помилка");
-            const previewLines = hasText ? f.textContent.split("\n").filter(l => l.trim() && !l.startsWith("===")).slice(0, 4) : [];
             return (
               <div key={id} style={{ position: "relative", flexShrink: 0 }}>
                 <div style={{
@@ -1121,7 +1109,7 @@ function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, stat
   const [selR, setSelR] = useState(0);
   const [hovId, setHovId] = useState(null);
   const [visibleIds, setVisibleIds] = useState(null);
-  const [groupFilter, setGroupFilter] = useState(null);
+  const [groupFilter] = useState(null);
   const [irrelevant, setIrrelevant] = useState(new Set()); // "item:0", "corr:1", "defect:2"
   const [reviewing, setReviewing] = useState(false);
   const [showTz, setShowTz] = useState(false);
@@ -1198,14 +1186,6 @@ function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, stat
       return s;
     });
   };
-  const handleToggleGroup = (groupAnns, vis) => {
-    setVisibleIds(prev => {
-      const s = new Set(prev || allAnns.map(a => `${a._src}:${a._srcIdx}`));
-      groupAnns.forEach(a => { const k = `${a._src}:${a._srcIdx}`; if (vis) s.add(k); else s.delete(k); });
-      return s;
-    });
-  };
-
   const activeR = renderFiles?.[selR];
   const activePrev = activeR?.preview || activeR?.pages?.[0]?.preview;
   const beforePrev = beforeFiles?.[0]?.preview || beforeFiles?.[0]?.pages?.[0]?.preview;
@@ -1948,9 +1928,9 @@ function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", n
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 const SESSION_KEY = "rqa_session";
-function saveSession(data) { try { localStorage.setItem(SESSION_KEY, JSON.stringify(data)); } catch {} }
+function saveSession(data) { try { localStorage.setItem(SESSION_KEY, JSON.stringify(data)); } catch { /* ignore */ } }
 function loadSession() { try { const s = localStorage.getItem(SESSION_KEY); return s ? JSON.parse(s) : null; } catch { return null; } }
-function clearSession() { try { localStorage.removeItem(SESSION_KEY); } catch {} }
+function clearSession() { try { localStorage.removeItem(SESSION_KEY); } catch { /* ignore */ } }
 
 export default function App() {
   const [mode, setMode] = useState("first");
@@ -1965,9 +1945,9 @@ export default function App() {
   const [consistency, setConsistency] = useState(null); // cross-render consistency check
   const [consistencyLoading, setConsistencyLoading] = useState(false);
   const [anthropicKey, setAnthropicKey] = useState(() => { try { return localStorage.getItem("anthropic_api_key") || ""; } catch { return ""; } });
-  const saveAnthropicKey = k => { setAnthropicKey(k); try { localStorage.setItem("anthropic_api_key", k); } catch {} };
+  const saveAnthropicKey = k => { setAnthropicKey(k); try { localStorage.setItem("anthropic_api_key", k); } catch { /* ignore */ } };
   const [archivizerToken, setArchivizerToken] = useState(() => { try { return localStorage.getItem("archivizer_token") || ""; } catch { return ""; } });
-  const saveArchivizerToken = k => { setArchivizerToken(k); try { localStorage.setItem("archivizer_token", k); } catch {} };
+  const saveArchivizerToken = k => { setArchivizerToken(k); try { localStorage.setItem("archivizer_token", k); } catch { /* ignore */ } };
   const [archivizerUrl, setArchivizerUrl] = useState("");
   const [archivizerStatus, setArchivizerStatus] = useState(null);
   const [tzCards, setTzCards] = useState([]); // [{id, category, text, source, imgPreview}]
@@ -1978,7 +1958,7 @@ export default function App() {
   const cachedPartsRef = useRef(null); // зберігає cacheParts після runAnalysis для retry
   const analysisRunningRef = useRef(false);
   const [openaiKey, setOpenaiKey] = useState(() => { try { return localStorage.getItem("openai_api_key") || ""; } catch { return ""; } });
-  const saveOpenaiKey = k => { setOpenaiKey(k); try { localStorage.setItem("openai_api_key", k); } catch {} };
+  const saveOpenaiKey = k => { setOpenaiKey(k); try { localStorage.setItem("openai_api_key", k); } catch { /* ignore */ } };
 
   const renders = useFileList(); const briefs = useFileList(); const refs = useFileList(); const draws = useFileList();
   const revBriefs = useFileList(); const revRefs = useFileList(); const revDraws = useFileList();
@@ -2133,12 +2113,7 @@ ${JSON_SCHEMA}` }];
       const hasDwgText = drawsList.filter(d => (d.type === "dxf" || d.type === "dwg") && d.textContent).length > 0;
       const hasBrief = briefText.trim() || briefsList.length > 0;
       const hasRefs = refsList.length > 0;
-      const hasExcel = drawsList.some(d => d.type === "excel") || briefsList.some(d => d.type === "excel");
-
       // ── Структуровані вимоги ТЗ ──────────────────────────────────────────────
-      const groupedTzCards = tzCards.length > 0
-        ? Object.entries(tzCards.reduce((acc, c) => { if (!acc[c.category]) acc[c.category] = []; acc[c.category].push(c.text); return acc; }, {})).map(([cat, its]) => ({ category: cat, items: its }))
-        : [];
       const tzSection = tzCards.length > 0
         ? `ПІДТВЕРДЖЕНІ ВИМОГИ ТЗ (${tzCards.length} пунктів — перевір КОЖЕН):\n${tzCards.map(c => `[${c.id}] ${c.category}: ${c.text}${c.source ? ` (${c.source})` : ""}`).join("\n")}\n${mn}`
         : `ТЗ КЛІЄНТА:\n${briefText.trim() || "(дивись прикріплені матеріали)"}\n${mn}`;

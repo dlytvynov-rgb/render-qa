@@ -1,7 +1,6 @@
 import express from "express";
 import cors from "cors";
 import https from "https";
-import http from "http";
 import { URL } from "url";
 
 const app = express();
