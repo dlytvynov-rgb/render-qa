@@ -69,7 +69,7 @@ async function pdfToPages(file, onProg, sig) {
     try {
       const tc = await page.getTextContent();
       const raw = tc.items.map(it => it.str || "").join(" ").replace(/\s{3,}/g, "  ").trim();
-      if (raw.length > 10) pageText = raw.slice(0, 2000);
+      if (raw.length > 10) pageText = raw.slice(0, 4000);
     } catch {}
     pages.push({ b64, preview: canvas.toDataURL("image/jpeg", Math.min(qq, 0.75)), text: pageText });
     onProg?.(Math.round(i / n * 100));
@@ -1748,7 +1748,10 @@ function TzReviewStep({ cards, onRemove, onEdit, onBack, onProceed, hasRenders, 
                   rows={Math.max(2, Math.ceil(item.text.length / 60))}
                   style={{ width: "100%", border: "none", background: "transparent", fontSize: 12, color: "#333", lineHeight: 1.55, fontFamily: "inherit", resize: "vertical", outline: "none", padding: 0, cursor: "text" }}
                 />
-                {item.source && <div style={{ fontSize: 9, color: "#ccc", fontFamily: "monospace", marginTop: 2 }}>[{item.source}]</div>}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2 }}>
+                  {item.source && <div style={{ fontSize: 9, color: "#ccc", fontFamily: "monospace" }}>[{item.source}]</div>}
+                  {item.link && <a href={item.link} target="_blank" rel="noreferrer" style={{ fontSize: 9, color: "#3498db", fontFamily: "monospace", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 180 }} title={item.link}>🔗 {item.link.replace(/^https?:\/\//, "")}</a>}
+                </div>
               </div>
               <button onClick={() => onRemove(item.id)} style={{ background: "none", border: "1px solid #e0ddd8", color: "#ccc", borderRadius: 4, padding: "2px 8px", cursor: "pointer", fontSize: 10, fontFamily: "monospace", flexShrink: 0, lineHeight: 1.4, marginTop: 2 }}>✕</button>
             </div>
@@ -2093,6 +2096,10 @@ ${revBlocks.join("\n\n")}
   • group: "technical" (Q1.x), "tz" (невідповідність типу по ТЗ/кресленнях), "materials" (нюанс кольору/відтінку), "geosetting" (Q3.x), "client" (Q4.x)
   • note у форматі: "Еталон ([джерело]): [що має бути] → Знайдено: [що є] → [висновок]" або "Перевірено — зауважень немає"
 ${isLast ? "- Заповни globalSummary — підсумок всіх раундів." : '- globalSummary: ""'}
+- Заповни "materials" — КОЖЕН матеріал згаданий в ТЗ/брифі/кресленнях:
+  • name, group, spec (якщо є), expected (по ТЗ), note (що видно на ПІСЛЯ-зображенні)
+  • status: "match" | "mismatch" | "missing" | "unknown"
+  • zone: ОБОВ'ЯЗКОВО — де матеріал видно на зображенні ПІСЛЯ
 
 ВІДПОВІДАЙ ТІЛЬКИ JSON:
 ${JSON_SCHEMA}` }];
@@ -2289,6 +2296,14 @@ ${tzParsedInstruction}
     Skipped: "Матеріал не наданий" або "Не застосовно"
   • ЗАБОРОНЕНО в будь-якому note: "можна замінити на", "схоже підійде", "альтернативно", "також вписується", "близький варіант"
   • Q2.x group "tz" = неправильний ТИП (червоний → є синій). group "materials" = нюанс (бежевий але холодний відтінок)
+- Заповни "materials" — КОЖЕН матеріал згаданий в ТЗ/брифі/кресленнях:
+  • name: точна назва матеріалу (напр. "Паркет дуб натуральний")
+  • group: категорія (Підлога, Стіни, Меблі, Освітлення, Текстиль тощо)
+  • spec: специфікація якщо вказана (розмір, марка, колір, відділка)
+  • status: "match" (відповідає ТЗ) | "mismatch" (не відповідає) | "missing" (відсутній на рендері) | "unknown" (неможливо оцінити)
+  • expected: що має бути по ТЗ (точно як в брифі)
+  • note: що реально видно на рендері — одне речення
+  • zone: ОБОВ'ЯЗКОВО — координати де цей матеріал видно на рендері
 
 ВІДПОВІДАЙ ТІЛЬКИ JSON:
 ${JSON_SCHEMA}` }];
@@ -2669,10 +2684,12 @@ ${briefText.trim() || "(дивись прикріплені матеріали)"
 • Що художник повинен перевірити особливо уважно
 
 ЗАВДАННЯ 2 — tz_parsed:
+КРИТИЧНО: знайди АБСОЛЮТНО ВСІ вимоги — жодного матеріалу, жодного меблю, жодного пункту не пропускати. Краще додати зайве ніж пропустити.
 - Кожен пункт = ОДНА конкретна вимога
 - text = ПОВНИЙ опис: назва + матеріал + колір (назва або HEX) + відділка + розмір + марка якщо є
 - НЕ пиши загальні фрази — лише конкретику
-- img_ref: мітка зображення звідки взята вимога (напр. "РЕФЕРЕНС 1 стор.2") або null
+- img_ref: мітка сторінки де ЗОБРАЖЕНО цей матеріал/предмет (напр. "РЕФЕРЕНС 1 стор.2", "БРИФ 1") або null — вказуй навіть якщо це бриф, не тільки референс
+- link: URL-посилання на матеріал/продукт якщо є в брифі (повне https://... посилання) або null
 - source: "бриф", "референс", "креслення", "ТЗ"
 - Не вигадуй вимоги яких немає в матеріалах
 - Категорії: "Матеріали та текстури", "Меблі та моделі", "Сезон / атмосфера", "Тип освітлення", "Креслення та планування", "Логотип / написи", "Вимоги клієнта", "Специфічні запити"
@@ -2688,7 +2705,7 @@ ${briefText.trim() || "(дивись прикріплені матеріали)"
 - text: точний текст дослівно, нічого не змінюй, не скорочуй, не додавай
 
 ВІДПОВІДАЙ ТІЛЬКИ JSON:
-{"project_annotation":"Візуалізація вітальні площею ~35м² у скандинавському стилі. Денне освітлення через великі вікна зліва, м'які розсіяні тіні. Підлога — дубовий паркет натуральний, стіни — біла матова штукатурка. Меблі: сірий велюровий диван, журнальний столик зі скла та металу. Надано: флорплан з розстановкою меблів та 3 референси атмосфери. Особлива увага — консистентність матеріалів між ракурсами та відповідність розташування меблів плану.","client_comments":[{"page":"БРИФ 1","text":"Диван має бути пудрово-рожевий, не бежевий. Підлога тільки дуб, без імітацій."},{"page":"БРИФ 1 стор.2","text":"Штори обов'язково — довгі, до підлоги, колір слонова кістка."}],"tz_parsed":[{"category":"Матеріали та текстури","items":[{"id":"tz1","text":"Підлога — паркет дуб 180×1200мм, колір натуральний, матовий лак","source":"бриф","img_ref":"БРИФ 1"},{"id":"tz2","text":"Диван — оксамит пудровий рожевий #D4A5A0","source":"референс","img_ref":"РЕФЕРЕНС 1 стор.2"}]}]}` }];
+{"project_annotation":"Візуалізація вітальні площею ~35м² у скандинавському стилі. Денне освітлення через великі вікна зліва, м'які розсіяні тіні. Підлога — дубовий паркет натуральний, стіни — біла матова штукатурка. Меблі: сірий велюровий диван, журнальний столик зі скла та металу. Надано: флорплан з розстановкою меблів та 3 референси атмосфери. Особлива увага — консистентність матеріалів між ракурсами та відповідність розташування меблів плану.","client_comments":[{"page":"БРИФ 1","text":"Диван має бути пудрово-рожевий, не бежевий. Підлога тільки дуб, без імітацій."},{"page":"БРИФ 1 стор.2","text":"Штори обов'язково — довгі, до підлоги, колір слонова кістка."}],"tz_parsed":[{"category":"Матеріали та текстури","items":[{"id":"tz1","text":"Підлога — паркет дуб 180×1200мм, колір натуральний, матовий лак","source":"бриф","img_ref":"БРИФ 1","link":null},{"id":"tz2","text":"Диван — оксамит пудровий рожевий #D4A5A0","source":"референс","img_ref":"РЕФЕРЕНС 1 стор.2","link":"https://example.com/fabric/velvet-pink"}]}]}` }];
     parts.push(...filesToParts(briefsList, "БРИФ"));
     parts.push(...filesToParts(refsList, "РЕФЕРЕНС"));
     parts.push(...filesToParts(drawsList, "КРЕСЛЕННЯ"));
@@ -2703,6 +2720,7 @@ ${briefText.trim() || "(дивись прикріплені матеріали)"
             text: item.text || "",
             source: item.source || "",
             imgPreview: item.img_ref ? (imgIndex[item.img_ref.toLowerCase()] || null) : null,
+            link: item.link || null,
           });
           counter++;
         });
