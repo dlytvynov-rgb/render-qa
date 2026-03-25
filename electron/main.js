@@ -53,7 +53,7 @@ async function createWindow() {
     width: 1280,
     height: 900,
     title: "Render QA",
-    webPreferences: { contextIsolation: true, preload: path.join(__dirname, "preload.js") },
+    webPreferences: { contextIsolation: true, preload: path.join(__dirname, "preload.cjs") },
   });
 
   win.loadURL(`http://localhost:${PORT}`);
