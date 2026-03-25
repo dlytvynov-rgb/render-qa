@@ -44,3 +44,36 @@ jobs:
         with:
           name: RenderQA-Windows
           path: release/*.exe
+
+  release:
+    needs: [build-mac, build-win]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: RenderQA-Mac
+          path: artifacts/mac
+      - uses: actions/download-artifact@v4
+        with:
+          name: RenderQA-Windows
+          path: artifacts/win
+      - name: Delete existing latest release
+        run: |
+          gh release delete latest --repo ${{ github.repository }} --yes || true
+          git -c http.extraheader="Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            ls-remote origin refs/tags/latest | grep -q . && \
+            gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/latest || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Render QA — Latest Build"
+          body: "Автоматична збірка з останнього коміту на `main`."
+          prerelease: true
+          files: |
+            artifacts/mac/*.dmg
+            artifacts/win/*.exe
