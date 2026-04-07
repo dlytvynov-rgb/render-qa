@@ -326,7 +326,11 @@ function useFileList() {
     ref.current = [...ref.current, { ...fileObj, _id: id }];
     bump();
   }, [bump]);
-  return { files: ref.current, ref, add, remove, addDone };
+  const updateTag = useCallback((id, tag) => {
+    ref.current = ref.current.map(x => x._id === id ? { ...x, _tag: tag } : x);
+    bump();
+  }, [bump]);
+  return { files: ref.current, ref, add, remove, addDone, updateTag };
 }
 
 let _dragging = null; // { file: processedFileObj, remove: fn }
@@ -335,13 +339,14 @@ let _dragging = null; // { file: processedFileObj, remove: fn }
 function filesToParts(files, label) {
   const parts = [];
   (files || []).forEach((f, fi) => {
+    const tagNote = f._tag ? ` [Референс до пункту ТЗ: "${f._tag}"]` : "";
     if ((f.type === "excel" || f.type === "dxf" || f.type === "dwg" || f.type === "text") && f.textContent) {
-      parts.push({ type: "text", text: `${label} ${fi + 1} [${f.ext || "TEXT"}: ${f.filename}]:\n${f.textContent}` });
+      parts.push({ type: "text", text: `${label} ${fi + 1}${tagNote} [${f.ext || "TEXT"}: ${f.filename}]:\n${f.textContent}` });
     } else {
       // For each page: send text annotations first (if any), then the image.
       // This lets Claude correlate "ця текстура на підлогу →" with the adjacent visual.
       (f.pages || []).filter(p => p.b64).forEach((pg, pi) => {
-        const pageLabel = `${label} ${fi + 1}${pi > 0 ? ` стор.${pi + 1}` : ""}`;
+        const pageLabel = `${label} ${fi + 1}${pi > 0 ? ` стор.${pi + 1}` : ""}${pi === 0 ? tagNote : ""}`;
         if (pg.text) {
           parts.push({ type: "text", text: `${pageLabel} — підписи та анотації на сторінці:\n${pg.text}` });
         }
@@ -737,7 +742,7 @@ function DwgSlot({ files, onAddDwg, onRemove, onConverted }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
       <div style={{ fontSize: 10, letterSpacing: "0.14em", color: "#888", marginBottom: 2, fontFamily: "monospace" }}>КРЕСЛЕННЯ</div>
-      <div style={{ fontSize: 9, color: "#bbb", fontFamily: "monospace", marginBottom: 5 }}>PDF · DXF · <span style={{ color: "#3498db" }}>DWG</span></div>
+      <div style={{ fontSize: 9, color: "#bbb", fontFamily: "monospace", marginBottom: 5 }}>PDF · DXF · <span style={{ color: "#3498db" }}>DWG</span> · JPG/PNG</div>
 
       {/* Зона завантаження */}
       <div
@@ -1657,7 +1662,7 @@ const CATEGORY_ICONS = {
   "Тип освітлення": "💡", "Креслення та планування": "📐", "Логотип / написи": "🔤",
   "Вимоги клієнта": "📋", "Специфічні запити": "⭐",
 };
-function TzReviewStep({ cards, onRemove, onEdit, onBack, onProceed, hasRenders, annotation, clientComments, onSavePdf }) {
+function TzReviewStep({ cards, onRemove, onEdit, onBack, onProceed, hasRenders, annotation, clientComments, onSavePdf, onUseInCheck }) {
   const grouped = {};
   cards.forEach(c => { if (!grouped[c.category]) grouped[c.category] = []; grouped[c.category].push(c); });
   return (
@@ -1741,7 +1746,7 @@ function TzReviewStep({ cards, onRemove, onEdit, onBack, onProceed, hasRenders, 
           ))}
         </div>
       ))}
-{!hasRenders && (
+{!onUseInCheck && !hasRenders && (
         <div style={{ background: "#fff5f5", border: "1px solid #e74c3c44", borderRadius: 8, padding: "10px 14px", fontSize: 11, color: "#e74c3c", fontFamily: "monospace" }}>
           ⚠️ Рендери не завантажені. Поверніться назад та додайте рендери для аналізу.
         </div>
@@ -1749,9 +1754,14 @@ function TzReviewStep({ cards, onRemove, onEdit, onBack, onProceed, hasRenders, 
       <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
         <button onClick={onBack} style={{ background: "transparent", border: "1px solid #ddd", color: "#888", padding: "12px 20px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 8 }}>← Назад</button>
         <button onClick={onSavePdf} style={{ background: "transparent", border: "1px solid #27ae60", color: "#27ae60", padding: "12px 16px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 8 }}>📄 PDF</button>
-        <button onClick={onProceed} disabled={!hasRenders} style={{ flex: 1, background: hasRenders ? "#1a1a1a" : "#ccc", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: hasRenders ? "pointer" : "not-allowed", borderRadius: 8 }}>
-          {cards.length > 0 ? `АНАЛІЗУВАТИ РЕНДЕРИ (${cards.length} пунктів ТЗ) →` : "АНАЛІЗУВАТИ РЕНДЕРИ →"}
-        </button>
+        {onUseInCheck
+          ? <button onClick={onUseInCheck} style={{ flex: 1, background: "#1a1a1a", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: "pointer", borderRadius: 8 }}>
+              {cards.length > 0 ? `ВИКОРИСТАТИ ПРИ ПЕРЕВІРЦІ (${cards.length} пунктів) →` : "ВИКОРИСТАТИ ПРИ ПЕРЕВІРЦІ →"}
+            </button>
+          : <button onClick={onProceed} disabled={!hasRenders} style={{ flex: 1, background: hasRenders ? "#1a1a1a" : "#ccc", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: hasRenders ? "pointer" : "not-allowed", borderRadius: 8 }}>
+              {cards.length > 0 ? `АНАЛІЗУВАТИ РЕНДЕРИ (${cards.length} пунктів ТЗ) →` : "АНАЛІЗУВАТИ РЕНДЕРИ →"}
+            </button>
+        }
       </div>
     </div>
   );
@@ -1890,7 +1900,8 @@ function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", n
           {files.map((f, i) => {
             const prev = f.preview || f.pages?.[0]?.preview;
             return (
-              <div key={f._id || i} draggable={!f._loading && f._done} onDragStart={() => { _dragging = { file: f, remove: () => onRemove(i) }; }} onDragEnd={() => { _dragging = null; }} style={{ position: "relative", width: 70, height: 70, flexShrink: 0, cursor: (!f._loading && f._done) ? "grab" : "default" }}>
+              <div key={f._id || i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2, flexShrink: 0 }}>
+            <div draggable={!f._loading && f._done} onDragStart={() => { _dragging = { file: f, remove: () => onRemove(i) }; }} onDragEnd={() => { _dragging = null; }} style={{ position: "relative", width: 70, height: 70, cursor: (!f._loading && f._done) ? "grab" : "default" }}>
                 {prev && f.type !== "excel"
                   ? <img src={prev} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 5, border: `1px solid ${f._error ? "#e74c3c" : f._done ? color : "#ddd"}`, filter: f._loading ? "brightness(0.4)" : "none" }} />
                   : <div style={{ width: "100%", height: "100%", borderRadius: 5, border: `1px solid ${f._error ? "#e74c3c" : f._done ? color : "#ddd"}`, background: f._error ? "#3a1a1a" : f.type === "dwg" ? "#0a1929" : f.type === "excel" ? "#0d2b0d" : "#f0eeea", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}>
@@ -1912,6 +1923,10 @@ function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", n
                 {!f._loading && f.type === "excel" && <div style={{ position: "absolute", bottom: 2, left: 2, background: "#27ae60", color: "#fff", fontSize: 7, fontFamily: "monospace", padding: "1px 3px", borderRadius: 2 }}>XLS</div>}
                 {!f._loading && <button onClick={() => onRemove(i)} style={{ position: "absolute", top: -5, right: -5, width: 16, height: 16, background: "#e74c3c", color: "#fff", border: "none", borderRadius: "50%", cursor: "pointer", fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>}
               </div>
+              {onTag && f._done && !f._loading && (
+                <input value={f._tag || ""} onChange={e => onTag(f._id, e.target.value)} placeholder="пункт ТЗ" title="Прив'язати до пункту ТЗ" style={{ width: 70, fontSize: 8, fontFamily: "monospace", border: "1px solid #ddd", borderRadius: 3, padding: "2px 4px", outline: "none", color: "#555", boxSizing: "border-box", textAlign: "center" }} />
+              )}
+            </div>
             );
           })}
           <div onClick={() => inputRef.current.click()} style={{ width: 70, height: 70, border: `2px dashed ${color}`, borderRadius: 8, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
@@ -2722,6 +2737,7 @@ ${briefText.trim() || "(дивись прикріплені матеріали)"
       setTzCards(cards);
       if (result.project_annotation) setTzAnnotation(result.project_annotation);
       if (result.client_comments?.length) setTzClientComments(result.client_comments);
+      saveSession({ savedAt: new Date().toISOString(), mode: "tz-review", tzCards: cards.map(c => ({ ...c, imgPreview: null })), tzAnnotation: result.project_annotation || "", tzClientComments: result.client_comments || [] });
     } catch (e) { setErr(`Помилка розбору ТЗ: ${e.message}`); setTzCards([]); }
     setTzParsing(false); setTzReview(true);
   }
@@ -2960,18 +2976,26 @@ ${fileList}
         <div style={{ margin: "0 24px 12px", background: "#fff", border: "1px solid #3498db33", borderRadius: 10, padding: "10px 16px", display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ fontSize: 13 }}>💾</span>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "#333", fontFamily: "monospace" }}>Є збережена сесія</div>
-            <div style={{ fontSize: 10, color: "#aaa", fontFamily: "monospace" }}>{new Date(savedSession.savedAt).toLocaleString("uk")} · {savedSession.perData?.filter(Boolean).length || 0} ракурсів</div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#333", fontFamily: "monospace" }}>{savedSession.mode === "tz-review" ? "Збережений розбір ТЗ" : "Є збережена сесія"}</div>
+            <div style={{ fontSize: 10, color: "#aaa", fontFamily: "monospace" }}>{new Date(savedSession.savedAt).toLocaleString("uk")} {savedSession.mode === "tz-review" ? `· ${savedSession.tzCards?.length || 0} пунктів` : `· ${savedSession.perData?.filter(Boolean).length || 0} ракурсів`}</div>
           </div>
           <button onClick={() => {
-            setMode(savedSession.mode || "first");
-            setPerData(savedSession.perData || []);
-            setGlobalSum(savedSession.globalSum || "");
-            setConsistency(savedSession.consistency || null);
-            if (savedSession.tzCards?.length) setTzCards(savedSession.tzCards);
-            if (savedSession.tzAnnotation) setTzAnnotation(savedSession.tzAnnotation);
-            if (savedSession.tzClientComments?.length) setTzClientComments(savedSession.tzClientComments);
-            setStep(2); setSavedSession(null);
+            if (savedSession.mode === "tz-review") {
+              setMode("tz-review");
+              if (savedSession.tzCards?.length) setTzCards(savedSession.tzCards);
+              if (savedSession.tzAnnotation) setTzAnnotation(savedSession.tzAnnotation);
+              if (savedSession.tzClientComments?.length) setTzClientComments(savedSession.tzClientComments);
+              setTzReview(true); setSavedSession(null);
+            } else {
+              setMode(savedSession.mode || "first");
+              setPerData(savedSession.perData || []);
+              setGlobalSum(savedSession.globalSum || "");
+              setConsistency(savedSession.consistency || null);
+              if (savedSession.tzCards?.length) setTzCards(savedSession.tzCards);
+              if (savedSession.tzAnnotation) setTzAnnotation(savedSession.tzAnnotation);
+              if (savedSession.tzClientComments?.length) setTzClientComments(savedSession.tzClientComments);
+              setStep(2); setSavedSession(null);
+            }
           }} style={{ background: "#3498db", color: "#fff", border: "none", padding: "6px 14px", borderRadius: 6, fontSize: 11, fontFamily: "monospace", cursor: "pointer" }}>
             Відновити →
           </button>
@@ -2981,17 +3005,18 @@ ${fileList}
         </div>
       )}
 
-      {step === 1 && tzReview && !isRev && (
+      {step === 1 && tzReview && mode !== "revision" && (
         <TzReviewStep
           cards={tzCards}
           onRemove={id => setTzCards(prev => prev.filter(c => c.id !== id))}
           onEdit={(id, text) => setTzCards(prev => prev.map(c => c.id === id ? { ...c, text } : c))}
           onBack={() => setTzReview(false)}
-          onProceed={runAnalysis}
-          hasRenders={rImages.length > 0}
+          onProceed={mode === "first" ? runAnalysis : undefined}
+          hasRenders={mode === "first" ? rImages.length > 0 : false}
           annotation={tzAnnotation}
           clientComments={tzClientComments}
           onSavePdf={generateTzReport}
+          onUseInCheck={mode === "tz-review" ? () => { setMode("first"); } : undefined}
         />
       )}
       {step === 1 && !tzReview && (
@@ -3103,9 +3128,18 @@ ${fileList}
               ? <button onClick={parseTzCards} disabled={tzParsing} style={{ background: tzParsing ? "#444" : "#1a1a1a", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: tzParsing ? "not-allowed" : "pointer", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%" }}>
                   {tzParsing ? <><div style={{ width: 12, height: 12, border: "1.5px solid #aaa", borderTop: "1.5px solid #fff", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />РОЗБИРАЮ ТЗ…</> : "РОЗІБРАТИ ТЗ →"}
                 </button>
-              : <button onClick={parseTzCards} disabled={tzParsing} style={{ background: tzParsing ? "#444" : "#1a1a1a", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: tzParsing ? "not-allowed" : "pointer", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%" }}>
-                  {tzParsing ? <><div style={{ width: 12, height: 12, border: "1.5px solid #aaa", borderTop: "1.5px solid #fff", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />АНАЛІЗУЮ…</> : "АНАЛІЗУВАТИ →"}
-                </button>
+              : tzCards.length > 0
+                ? <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ background: "#f0faf4", border: "1px solid #27ae6033", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "#27ae60", fontFamily: "monospace", display: "flex", alignItems: "center", gap: 8 }}>
+                      ✓ ТЗ розібрано — {tzCards.length} пунктів. <button onClick={() => { setTzCards([]); setTzAnnotation(""); setTzClientComments([]); }} style={{ background: "none", border: "none", color: "#aaa", fontSize: 10, fontFamily: "monospace", cursor: "pointer", padding: 0, marginLeft: "auto" }}>скинути</button>
+                    </div>
+                    <button onClick={() => setTzReview(true)} style={{ background: "#1a1a1a", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: "pointer", borderRadius: 8, width: "100%" }}>
+                      ПЕРЕЙТИ ДО ПЕРЕВІРКИ ({tzCards.length} пунктів ТЗ) →
+                    </button>
+                  </div>
+                : <button onClick={parseTzCards} disabled={tzParsing} style={{ background: tzParsing ? "#444" : "#1a1a1a", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: tzParsing ? "not-allowed" : "pointer", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%" }}>
+                    {tzParsing ? <><div style={{ width: 12, height: 12, border: "1.5px solid #aaa", borderTop: "1.5px solid #fff", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />РОЗБИРАЮ ТЗ…</> : "РОЗІБРАТИ ТЗ →"}
+                  </button>
           }
         </div>
       )}
