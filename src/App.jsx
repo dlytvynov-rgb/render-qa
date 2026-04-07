@@ -745,9 +745,9 @@ function DwgSlot({ files, onAddDwg, onRemove, onConverted }) {
         onDragLeave={e => { e.preventDefault(); if (--ctr.current === 0) setDrag(false); }}
         onDragOver={e => e.preventDefault()}
         onDrop={e => { e.preventDefault(); setDrag(false); ctr.current = 0; handleFiles(e.dataTransfer.files); }}
-        style={{ border: `2px dashed ${drag ? "#3498db" : "#ddd"}`, borderRadius: hasDwg ? "10px 10px 0 0" : 10, padding: 8, background: drag ? "#3498db11" : "#fafafa", minHeight: 90 }}
+        style={{ border: `2px dashed ${drag ? "#3498db" : "#ddd"}`, borderRadius: hasDwg ? "10px 10px 0 0" : 10, padding: 8, background: drag ? "#3498db11" : "#fafafa", minHeight: 90, display: "flex", flexDirection: "column", justifyContent: files.length === 0 ? "center" : "flex-start" }}
       >
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-start" }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", justifyContent: files.length === 0 ? "center" : "flex-start" }}>
           {files.map((f, i) => {
             const id = f._id;
             const conv = converting[id];
@@ -1885,8 +1885,8 @@ function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", n
       {label && <div style={{ fontSize: 10, letterSpacing: "0.14em", color: "#888", marginBottom: note ? 2 : 5, fontFamily: "monospace" }}>{label}</div>}
       {note && <div style={{ fontSize: 9, color: "#bbb", fontFamily: "monospace", marginBottom: 5 }}>{note}</div>}
       <div onDragEnter={e => { e.preventDefault(); ctr.current++; setDrag(true); }} onDragLeave={e => { e.preventDefault(); if (--ctr.current === 0) setDrag(false); }} onDragOver={e => e.preventDefault()} onDrop={onDrop}
-        style={{ border: `2px dashed ${drag ? color : "#ddd"}`, borderRadius: 10, padding: 8, background: drag ? color + "11" : "#fafafa", minHeight: 90 }}>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-start" }}>
+        style={{ border: `2px dashed ${drag ? color : "#ddd"}`, borderRadius: 10, padding: 8, background: drag ? color + "11" : "#fafafa", minHeight: 90, display: "flex", flexDirection: "column", justifyContent: files.length === 0 ? "center" : "flex-start" }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", justifyContent: files.length === 0 ? "center" : "flex-start" }}>
           {files.map((f, i) => {
             const prev = f.preview || f.pages?.[0]?.preview;
             return (
@@ -2996,8 +2996,12 @@ ${fileList}
       )}
       {step === 1 && !tzReview && (
         <div style={{ maxWidth: "100%", width: "100%", padding: "22px 24px", display: "flex", flexDirection: "column", gap: 16, boxSizing: "border-box" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            {[{ id: "first", icon: "🎯", label: "Перший результат", desc: "Рендер vs ТЗ, референси, специфікація" }, { id: "revision", icon: "🔄", label: "Порівняння раундів", desc: "ДО vs ПІСЛЯ — чи внесені правки" }].map(m => (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+            {[
+              { id: "tz-review", icon: "📋", label: "Розбір ТЗ",          desc: "Структурувати ТЗ у чекліст" },
+              { id: "first",     icon: "🎯", label: "Перший результат",   desc: "Рендер vs ТЗ, референси, специфікація" },
+              { id: "revision",  icon: "🔄", label: "Порівняння раундів", desc: "ДО vs ПІСЛЯ — чи внесені правки" },
+            ].map(m => (
               <div key={m.id} onClick={() => { setMode(m.id); setErr(""); }} style={{ background: mode === m.id ? "#1a1a1a" : "#fff", color: mode === m.id ? "#f2f0ec" : "#444", border: `2px solid ${mode === m.id ? "#1a1a1a" : "#e0ddd8"}`, borderRadius: 10, padding: "14px 16px", cursor: "pointer", transition: "all 0.15s" }}>
                 <div style={{ fontSize: 20, marginBottom: 4 }}>{m.icon}</div>
                 <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{m.label}</div>
@@ -3012,7 +3016,25 @@ ${fileList}
             {Object.entries(STANDARDS).map(([k, v]) => <div key={k} style={{ flex: 1, minWidth: 140, background: v.bg, border: `1px solid ${v.color}44`, borderLeft: `4px solid ${v.color}`, borderRadius: "0 8px 8px 0", padding: "7px 11px" }}><div style={{ fontSize: 13, fontWeight: 700, color: v.color, fontFamily: "monospace", marginBottom: 2 }}>{k}</div><div style={{ fontSize: 10, color: "#666", fontFamily: "monospace" }}>{v.desc}</div></div>)}
           </div>
           <div style={{ height: 1, background: "#ddd" }} />
-          {!isRev && (
+          {mode === "tz-review" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div>
+                <div style={{ fontSize: 10, letterSpacing: "0.14em", color: "#888", marginBottom: 5, fontFamily: "monospace" }}>ТЗ — ТЕКСТ</div>
+                <textarea value={briefText} onChange={e => setBriefText(e.target.value)} placeholder={"• Інтер'єр вітальні у скандинавському стилі\n• Або залиште порожнім — ТЗ у файлах нижче"} style={{ width: "100%", minHeight: 80, padding: "10px 12px", border: "1px solid #ddd", borderRadius: 8, background: "#fff", fontSize: 13, lineHeight: 1.7, fontFamily: "monospace", resize: "vertical", color: "#333", outline: "none", boxSizing: "border-box" }} />
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+                <UploadBox label="БРИФИ" note="PDF, зобр., Excel/CSV" files={briefs.files} onAdd={briefs.add} onAddDone={briefs.addDone} onRemove={briefs.remove} color="#e74c3c" />
+                <UploadBox label="РЕФЕРЕНСИ" note="Зображення" files={refs.files} onAdd={refs.add} onAddDone={refs.addDone} onRemove={refs.remove} onTag={refs.updateTag} color="#e67e22" />
+                <DwgSlot
+                  files={draws.files}
+                  onAddDwg={draws.add}
+                  onRemove={draws.remove}
+                  onConverted={(dwgFile, dxfText) => handleDwgConverted(draws, dwgFile, dxfText)}
+                />
+              </div>
+            </div>
+          )}
+          {mode === "first" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <div style={{ background: "#0d1a2b", border: "1px solid #2980b944", borderRadius: 10, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
                 <div style={{ fontSize: 10, letterSpacing: "0.14em", color: "#2980b9", fontFamily: "monospace", marginBottom: 4 }}>ARCHIVIZER</div>
@@ -3032,7 +3054,7 @@ ${fileList}
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
                 <UploadBox label="БРИФИ" note="PDF, зобр., Excel/CSV" files={briefs.files} onAdd={briefs.add} onAddDone={briefs.addDone} onRemove={briefs.remove} color="#e74c3c" />
-                <UploadBox label="РЕФЕРЕНСИ" note="Зображення" files={refs.files} onAdd={refs.add} onAddDone={refs.addDone} onRemove={refs.remove} color="#e67e22" />
+                <UploadBox label="РЕФЕРЕНСИ" note="Зображення" files={refs.files} onAdd={refs.add} onAddDone={refs.addDone} onRemove={refs.remove} onTag={refs.updateTag} color="#e67e22" />
                 <DwgSlot
                   files={draws.files}
                   onAddDwg={draws.add}
@@ -3075,13 +3097,15 @@ ${fileList}
             </div>
           )}
           {err && <div style={{ color: "#e74c3c", fontSize: 12, fontFamily: "monospace", padding: "10px 13px", background: "#fff5f5", borderRadius: 6, border: "1px solid #fcc" }}>{err}</div>}
-          {isRev
+          {mode === "revision"
             ? <button onClick={runAnalysis} style={{ background: "#1a1a1a", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: "pointer", borderRadius: 8 }}>ПОРІВНЯТИ РАУНДИ →</button>
-            : <button onClick={parseTzCards} disabled={tzParsing} style={{ background: tzParsing ? "#444" : "#1a1a1a", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: tzParsing ? "not-allowed" : "pointer", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                {tzParsing
-                  ? <><div style={{ width: 12, height: 12, border: "1.5px solid #aaa", borderTop: "1.5px solid #fff", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />РОЗБИРАЮ ТЗ…</>
-                  : "РОЗІБРАТИ ТЗ →"}
-              </button>
+            : mode === "tz-review"
+              ? <button onClick={parseTzCards} disabled={tzParsing} style={{ background: tzParsing ? "#444" : "#1a1a1a", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: tzParsing ? "not-allowed" : "pointer", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%" }}>
+                  {tzParsing ? <><div style={{ width: 12, height: 12, border: "1.5px solid #aaa", borderTop: "1.5px solid #fff", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />РОЗБИРАЮ ТЗ…</> : "РОЗІБРАТИ ТЗ →"}
+                </button>
+              : <button onClick={parseTzCards} disabled={tzParsing} style={{ background: tzParsing ? "#444" : "#1a1a1a", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: tzParsing ? "not-allowed" : "pointer", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%" }}>
+                  {tzParsing ? <><div style={{ width: 12, height: 12, border: "1.5px solid #aaa", borderTop: "1.5px solid #fff", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />АНАЛІЗУЮ…</> : "АНАЛІЗУВАТИ →"}
+                </button>
           }
         </div>
       )}
