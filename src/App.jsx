@@ -1877,7 +1877,7 @@ function Grid({ items, perData, statuses, globalSummary, onSelect, onRetry, mode
 }
 
 // ─── Upload box ───────────────────────────────────────────────────────────────
-function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", note }) {
+function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", note, onTag }) {
   const inputRef = useRef(); const [drag, setDrag] = useState(false); const ctr = useRef(0);
   const onDrop = e => {
     e.preventDefault(); setDrag(false); ctr.current = 0;
