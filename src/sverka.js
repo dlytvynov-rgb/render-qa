@@ -47,3 +47,54 @@ export function docTypeFromName(filename, zoneKey) {
   if (zoneKey === "refs") return "reference";
   return null;
 }
+
+export const SVERKA_STATUS = {
+  ok:          { icon: "✅", color: "#27ae60", label: "Ок" },
+  warn:        { icon: "⚠️", color: "#e67e22", label: "Зауваження" },
+  fail:        { icon: "❌", color: "#e74c3c", label: "Не пройдено" },
+  no_material: { icon: "⬜", color: "#bbb",    label: "Немає матеріалу" },
+  unchecked:   { icon: "·",  color: "#aaa",    label: "Не перевірено" },
+};
+
+export function activeSverka(docTypes, mode) {
+  const set = new Set((docTypes || []).filter(Boolean));
+  return SVERKA_CHECKS.map(c => ({
+    ...c,
+    active: c.needs.length === 0
+      || c.needs.some(n => set.has(n))
+      || (c.id === "S13" && mode === "revision"),
+  }));
+}
+
+// Мержить AI-відповідь з override-ами ПМ у 13 рядків для UI/PDF.
+export function sverkaRows(aiSverka, overrides, activeChecks) {
+  const byId = {};
+  (aiSverka || []).forEach(x => { if (x && x.id) byId[x.id] = x; });
+  return activeChecks.map(c => {
+    const ai = byId[c.id];
+    const ov = overrides ? overrides[c.id] : undefined;
+    const status = !c.active ? "no_material" : (ov || ai?.status || "unchecked");
+    return {
+      id: c.id, label: c.label, needs: c.needs, active: c.active, status,
+      note: ai?.note || "", doc_ref: ai?.doc_ref || "", zone: ai?.zone || null,
+      overridden: !!ov,
+    };
+  });
+}
+
+export function sverkaPromptBlock(activeChecks, taggedFiles) {
+  const files = taggedFiles || [];
+  const act = activeChecks.filter(c => c.active);
+  const inact = activeChecks.filter(c => !c.active);
+  const lines = act.map(c => {
+    const docs = files.filter(f => c.needs.includes(f.docType)).map(f => f.label);
+    return `${c.id} ${c.label}${docs.length ? ` → ${docs.join(", ")}` : ""}`;
+  });
+  return `── CROSS-CHECK (студійний чеклист) ──
+Перевір КОЖЕН активний пункт по відповідному документу:
+${lines.join("\n")}
+${inact.length ? `Неактивні пункти — постав status "no_material": ${inact.map(c => c.id).join(", ")}` : ""}
+- Заповни масив "sverka": {"id","status":"ok"|"warn"|"fail"|"no_material","note","doc_ref","zone"}
+- note: що звірено і з чим, одне-два речення. doc_ref: назва файлу-джерела.
+- zone ОБОВ'ЯЗКОВА для warn/fail — де саме на рендері проблема.`;
+}
