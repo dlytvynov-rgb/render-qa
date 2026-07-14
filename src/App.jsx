@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { DOC_TYPES, docTypeFromName } from "./sverka.js";
+import { DOC_TYPES, docTypeFromName, activeSverka, sverkaPromptBlock } from "./sverka.js";
 
 // ─── SheetJS ──────────────────────────────────────────────────────────────────
 async function loadXLSX() {
@@ -378,7 +378,7 @@ function normalizeZone(z) {
 function normalizeZones(data) {
   if (!data) return data;
   const fixArr = arr => (arr || []).map(item => item?.zone ? { ...item, zone: normalizeZone(item.zone) } : item);
-  return { ...data, items: fixArr(data.items), defects: fixArr(data.defects), corrections: fixArr(data.corrections) };
+  return { ...data, items: fixArr(data.items), defects: fixArr(data.defects), corrections: fixArr(data.corrections), sverka: fixArr(data.sverka) };
 }
 async function callAPI(parts, retries = 2, apiKey = "") {
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -484,7 +484,7 @@ const BLUEPRINT_COMPARE_PROMPT = `═══ ПОРІВНЯННЯ З КРЕСЛЕ
 Elevations (фасади/висоти), Floorplan (розташування меблів/стін), Lighting plan (розташування світильників/розеток), лейаут меблів, вікна/двері/ручки/плінтуси/карнизи, напрямок текстур/матеріалів, розкладка плитки/підлог, вентканали, водостоки (Gutter), гребінь/коник даху, цегла/сайдинг, відповідність ландшафтному плану.
 Для кожної невідповідності — вкажи точну зону на рендері.`;
 
-const JSON_SCHEMA = `{"tz_parsed":[{"category":"Матеріали","items":["Диван — червоний велюр","Підлога — паркет дуб 180×1200мм","Стіни — штукатурка теплий беж"]},{"category":"Сезон / атмосфера","items":["Літо, яскраве денне освітлення"]},{"category":"Меблі та моделі","items":["Стілець Eames білий","Стіл скляний 120×80см"]},{"category":"Креслення","items":["Планування 4×6м, вікно зліва, вхід справа"]},{"category":"Логотип / написи","items":["Логотип XYZ на стіні праворуч"]},{"category":"Вимоги клієнта","items":["Формат TIFF 300dpi"]}],"checks":[{"id":"Q1.1","status":"ok","group":"technical","note":"Всі меблі стоять на поверхні, контактні тіні присутні"},{"id":"Q1.2","status":"fail","group":"technical","note":"Диван перетинає ліву стіну в нижній частині"},{"id":"Q1.3","status":"ok","group":"technical","note":"Тайлінг не виявлено, масштаб текстур коректний"},{"id":"Q1.4","status":"ok","group":"technical","note":"Краї рівні, аліасинг відсутній"},{"id":"Q1.5","status":"warn","group":"technical","note":"Незначні fireflies у верхньому правому куті стелі"},{"id":"Q1.6","status":"ok","group":"technical","note":"IOR матеріалів коректний, roughness відповідає"},{"id":"Q2.1","status":"skipped","group":"tz","note":"Креслення не надані"},{"id":"Q2.2","status":"fail","group":"tz","note":"Колір дивану: має бути червоний велюр — присутній синій"},{"id":"Q2.2b","status":"warn","group":"materials","note":"Відтінок беж стіни недостатньо теплий порівняно з референсом"},{"id":"Q2.3","status":"ok","group":"tz","note":"Модель стільця відповідає запиту клієнта"},{"id":"Q3.1","status":"warn","group":"geosetting","note":"Відсутні розетки на стінах — геосеттинг неповний"},{"id":"Q3.2","status":"ok","group":"geosetting","note":"Написи та логотипи коректні"},{"id":"Q4.1","status":"skipped","group":"client","note":"Специфічних технічних вимог клієнта не зазначено"}],"items":[{"id":"tz1","comment":"Текстура підлоги — паркет дуб","status":"not_fixed","note":"Видно тайлінг патерну","zone":{"x":20,"y":60,"w":18,"h":14}},{"id":"tz2","comment":"Пора року — літо","status":"fixed","note":"Зелена рослинність відповідає","zone":{"x":35,"y":15,"w":22,"h":18}}],"corrections":[{"id":"c1","title":"Виправити тіні під диваном","description":"Відсутні контактні тіні","priority":"high","zone":{"x":18,"y":68,"w":24,"h":8}}],"defects":[{"id":"d1","title":"Левітація ніжки стільця","description":"Передня ліва ніжка не торкається підлоги","severity":"high","qa_tag":"Q1.1","zone":{"x":44,"y":71,"w":4,"h":6}},{"id":"d2","title":"Неправильний напис на банері","description":"Lorem Ipsum замість реального тексту","severity":"medium","qa_tag":"Q3.2","zone":{"x":60,"y":20,"w":18,"h":8}},{"id":"d3","title":"Відсутні розетки","description":"На стінах немає розеток — геосеттинг","severity":"low","qa_tag":"Q3.1","zone":{"x":10,"y":55,"w":5,"h":6}},{"id":"d4","title":"Меблі не на місці по плану","description":"Диван зміщений відносно floorplan","severity":"high","qa_tag":"Q2.1","zone":{"x":25,"y":50,"w":30,"h":25}}],"materials":[{"id":"m1","name":"Паркет дуб натуральний","group":"Підлога","spec":"180×1200мм","status":"match","note":"Відповідає ТЗ","expected":"180x1200 натуральний дуб","zone":{"x":15,"y":65,"w":22,"h":18}}],"quality":{"standard":"MLR","score":65,"tz_score":80,"tz_done":12,"tz_total":15,"summary":"Рендер загалом якісний, але є проблеми з геосеттингом та написами","criteria":[{"name":"Геометрія та фізика","score":55},{"name":"Матеріали та текстури","score":60},{"name":"Геосеттинг та деталі","score":50},{"name":"Художня якість","score":72}],"upgradeTips":["Додати розетки на стінах","Виправити написи на банерах"]},"summary":"MLR рівень, основні проблеми: геосеттинг та написи","globalSummary":""}`;
+const JSON_SCHEMA = `{"tz_parsed":[{"category":"Матеріали","items":["Диван — червоний велюр","Підлога — паркет дуб 180×1200мм","Стіни — штукатурка теплий беж"]},{"category":"Сезон / атмосфера","items":["Літо, яскраве денне освітлення"]},{"category":"Меблі та моделі","items":["Стілець Eames білий","Стіл скляний 120×80см"]},{"category":"Креслення","items":["Планування 4×6м, вікно зліва, вхід справа"]},{"category":"Логотип / написи","items":["Логотип XYZ на стіні праворуч"]},{"category":"Вимоги клієнта","items":["Формат TIFF 300dpi"]}],"sverka":[{"id":"S10","status":"ok","note":"Світильники по RCP: 6/6 на місцях, розетки по плану","doc_ref":"RCP_final.pdf","zone":{"x":40,"y":8,"w":20,"h":10}},{"id":"S7","status":"no_material","note":"Ландшафтний план не наданий","doc_ref":"","zone":null}],"checks":[{"id":"Q1.1","status":"ok","group":"technical","note":"Всі меблі стоять на поверхні, контактні тіні присутні"},{"id":"Q1.2","status":"fail","group":"technical","note":"Диван перетинає ліву стіну в нижній частині"},{"id":"Q1.3","status":"ok","group":"technical","note":"Тайлінг не виявлено, масштаб текстур коректний"},{"id":"Q1.4","status":"ok","group":"technical","note":"Краї рівні, аліасинг відсутній"},{"id":"Q1.5","status":"warn","group":"technical","note":"Незначні fireflies у верхньому правому куті стелі"},{"id":"Q1.6","status":"ok","group":"technical","note":"IOR матеріалів коректний, roughness відповідає"},{"id":"Q2.1","status":"skipped","group":"tz","note":"Креслення не надані"},{"id":"Q2.2","status":"fail","group":"tz","note":"Колір дивану: має бути червоний велюр — присутній синій"},{"id":"Q2.2b","status":"warn","group":"materials","note":"Відтінок беж стіни недостатньо теплий порівняно з референсом"},{"id":"Q2.3","status":"ok","group":"tz","note":"Модель стільця відповідає запиту клієнта"},{"id":"Q3.1","status":"warn","group":"geosetting","note":"Відсутні розетки на стінах — геосеттинг неповний"},{"id":"Q3.2","status":"ok","group":"geosetting","note":"Написи та логотипи коректні"},{"id":"Q4.1","status":"skipped","group":"client","note":"Специфічних технічних вимог клієнта не зазначено"}],"items":[{"id":"tz1","comment":"Текстура підлоги — паркет дуб","status":"not_fixed","note":"Видно тайлінг патерну","zone":{"x":20,"y":60,"w":18,"h":14}},{"id":"tz2","comment":"Пора року — літо","status":"fixed","note":"Зелена рослинність відповідає","zone":{"x":35,"y":15,"w":22,"h":18}}],"corrections":[{"id":"c1","title":"Виправити тіні під диваном","description":"Відсутні контактні тіні","priority":"high","zone":{"x":18,"y":68,"w":24,"h":8}}],"defects":[{"id":"d1","title":"Левітація ніжки стільця","description":"Передня ліва ніжка не торкається підлоги","severity":"high","qa_tag":"Q1.1","zone":{"x":44,"y":71,"w":4,"h":6}},{"id":"d2","title":"Неправильний напис на банері","description":"Lorem Ipsum замість реального тексту","severity":"medium","qa_tag":"Q3.2","zone":{"x":60,"y":20,"w":18,"h":8}},{"id":"d3","title":"Відсутні розетки","description":"На стінах немає розеток — геосеттинг","severity":"low","qa_tag":"Q3.1","zone":{"x":10,"y":55,"w":5,"h":6}},{"id":"d4","title":"Меблі не на місці по плану","description":"Диван зміщений відносно floorplan","severity":"high","qa_tag":"Q2.1","zone":{"x":25,"y":50,"w":30,"h":25}}],"materials":[{"id":"m1","name":"Паркет дуб натуральний","group":"Підлога","spec":"180×1200мм","status":"match","note":"Відповідає ТЗ","expected":"180x1200 натуральний дуб","zone":{"x":15,"y":65,"w":22,"h":18}}],"quality":{"standard":"MLR","score":65,"tz_score":80,"tz_done":12,"tz_total":15,"summary":"Рендер загалом якісний, але є проблеми з геосеттингом та написами","criteria":[{"name":"Геометрія та фізика","score":55},{"name":"Матеріали та текстури","score":60},{"name":"Геосеттинг та деталі","score":50},{"name":"Художня якість","score":72}],"upgradeTips":["Додати розетки на стінах","Виправити написи на банерах"]},"summary":"MLR рівень, основні проблеми: геосеттинг та написи","globalSummary":""}`;
 
 // ─── Canvas annotations ───────────────────────────────────────────────────────
 function useAnnotatedCanvas(imgRef, anns, visibleIds, hovId) {
@@ -1894,6 +1894,12 @@ export default function App() {
       setErr(""); setStep(2); setSel(null);
       const results = vp.map(() => null); setPerData([...results]);
       setStatuses(vp.map((_, i) => i === 0 ? "Аналізую…" : "У черзі…"));
+      const taggedFilesRev = [];
+      const collectTaggedRev = (files, label) => (files || []).forEach((f, fi) => {
+        if (f._docType) taggedFilesRev.push({ docType: f._docType, label: `${label} ${fi + 1}: ${f.filename}` });
+      });
+      collectTaggedRev(readyFiles(revBriefs), "БРИФ"); collectTaggedRev(readyFiles(revRefs), "РЕФЕРЕНС"); collectTaggedRev(readyFiles(revDraws), "КРЕСЛЕННЯ");
+      const sverkaChecksRev = activeSverka(taggedFilesRev.map(t => t.docType), "revision");
       for (let ri = 0; ri < vp.length; ri++) {
         setStatuses(prev => prev.map((s, i) => i === ri ? "Аналізую…" : i > ri ? "У черзі…" : null));
         const pair = vp[ri];
@@ -1924,6 +1930,8 @@ export default function App() {
         revBlocks.push(`── РЕОСЕТТИНГ (Q3.1) ──
 Чи виправлено проблеми геосеттингу якщо вони були в правках?
 Розетки, номери, написи на техніці, штори, рослинність.`);
+
+        revBlocks.push(sverkaPromptBlock(sverkaChecksRev, taggedFilesRev));
 
         revBlocks.push(`── РЕГРЕСІЯ ──
 Чи не погіршились інші місця при виправленні? Зона що не входила в правки але змінилась.`);
@@ -1964,7 +1972,7 @@ ${JSON_SCHEMA}` }];
         parts.push(...filesToParts(readyFiles(revDraws), "КРЕСЛЕННЯ"));
         try {
           const p = await callAPI(parts, 2, anthropicKey);
-          results[ri] = normalizeZones({ tz_parsed: p.tz_parsed || [], checks: p.checks || [], items: p.items || [], corrections: p.corrections || [], defects: p.defects || [], materials: p.materials || [], quality: p.quality || null, summary: p.summary || "" });
+          results[ri] = normalizeZones({ tz_parsed: p.tz_parsed || [], checks: p.checks || [], items: p.items || [], corrections: p.corrections || [], defects: p.defects || [], materials: p.materials || [], sverka: p.sverka || [], quality: p.quality || null, summary: p.summary || "" });
           if (p.globalSummary) setGlobalSum(p.globalSummary);
         } catch (e) { results[ri] = { items: [], corrections: [], defects: [], materials: [], quality: null, error: e.message }; }
         setPerData([...results]);
@@ -2071,6 +2079,15 @@ ${hasRefs ? "• Відповідність референсам: настрій
       }
       const activeChecklist = blocks.join("\n\n");
 
+      // ── Cross-Check: активні пункти по типах завантажених документів ─────────
+      const taggedFiles = [];
+      const collectTagged = (files, label) => (files || []).forEach((f, fi) => {
+        if (f._docType) taggedFiles.push({ docType: f._docType, label: `${label} ${fi + 1}: ${f.filename}` });
+      });
+      collectTagged(briefsList, "БРИФ"); collectTagged(refsList, "РЕФЕРЕНС"); collectTagged(drawsList, "КРЕСЛЕННЯ");
+      const sverkaChecks = activeSverka(taggedFiles.map(t => t.docType), mode);
+      const sverkaBlock = sverkaPromptBlock(sverkaChecks, taggedFiles);
+
       // Будуємо кешовані частини: інструкції + всі матеріали (бриф, референси, креслення)
       const cacheParts = [{ type: "text", text: `Ти — PM та Art Director студії 3D-візуалізації. Перевіряєш проект з ${rImages.length} ракурс(ів).
 
@@ -2114,6 +2131,9 @@ note формат: "[AD спостереження] → Рекомендація
 
 ── ШАР 3: ТЕХНІЧНІ ДЕФЕКТИ (QA) ──
 ${activeChecklist}
+
+── ШАР 4: CROSS-CHECK (студійний чеклист по документах) ──
+${sverkaBlock}
 
 СТАНДАРТИ ЯКОСТІ:
 ${QUAL_C}
@@ -2179,7 +2199,7 @@ ${JSON_SCHEMA}` }];
         const parts = [...cacheParts, ...renderParts];
         try {
           const p = await callAPI(parts, 2, anthropicKey);
-          results[ri] = normalizeZones({ tz_parsed: p.tz_parsed || [], checks: p.checks || [], items: p.items || [], corrections: p.corrections || [], defects: p.defects || [], materials: p.materials || [], quality: p.quality || null, summary: p.summary || "" });
+          results[ri] = normalizeZones({ tz_parsed: p.tz_parsed || [], checks: p.checks || [], items: p.items || [], corrections: p.corrections || [], defects: p.defects || [], materials: p.materials || [], sverka: p.sverka || [], quality: p.quality || null, summary: p.summary || "" });
           if (p.globalSummary) setGlobalSum(p.globalSummary);
         } catch (e) { results[ri] = { items: [], corrections: [], defects: [], materials: [], quality: null, error: e.message }; }
         setPerData([...results]);
@@ -2246,7 +2266,7 @@ ${summaries}
       const parts = [...cachedPartsRef.current, ...renderParts];
       try {
         const p = await callAPI(parts, 2, anthropicKey);
-        results[ri] = { tz_parsed: p.tz_parsed || [], checks: p.checks || [], items: p.items || [], corrections: p.corrections || [], defects: p.defects || [], materials: p.materials || [], quality: p.quality || null, summary: p.summary || "" };
+        results[ri] = normalizeZones({ tz_parsed: p.tz_parsed || [], checks: p.checks || [], items: p.items || [], corrections: p.corrections || [], defects: p.defects || [], materials: p.materials || [], sverka: p.sverka || [], quality: p.quality || null, summary: p.summary || "" });
         if (p.globalSummary) setGlobalSum(p.globalSummary);
       } catch (e) { results[ri] = { items: [], corrections: [], defects: [], materials: [], quality: null, error: e.message }; }
       setPerData([...results]);
@@ -3097,7 +3117,7 @@ ${JSON_SCHEMA}` }];
             try {
               const p = await callAPI(parts, 2, anthropicKey);
               const newData = [...perData];
-              newData[ri] = { tz_parsed: p.tz_parsed||[], checks: p.checks||[], items: p.items||[], corrections: p.corrections||[], defects: p.defects||[], materials: p.materials||[], quality: p.quality||null, summary: p.summary||"" };
+              newData[ri] = normalizeZones({ tz_parsed: p.tz_parsed||[], checks: p.checks||[], items: p.items||[], corrections: p.corrections||[], defects: p.defects||[], materials: p.materials||[], sverka: p.sverka||[], quality: p.quality||null, summary: p.summary||"" });
               setPerData(newData);
             } catch(e) {
               const newData = [...perData]; newData[ri] = { ...perData[ri], error: e.message }; setPerData(newData);
