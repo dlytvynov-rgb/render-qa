@@ -2490,6 +2490,21 @@ ${summaries}
           </div>`).join("")}
         </div>` : "";
 
+      const svAiRows = data.sverka || [];
+      const svRowsPdf = sverkaRows(svAiRows, data.sverkaOverrides, activeSverka([], mode)).map(r => {
+        // активність відновлюємо з відповіді AI: no_material лишається як прийшло
+        const ai = svAiRows.find(x => x.id === r.id);
+        return ai ? { ...r, status: data.sverkaOverrides?.[r.id] || ai.status, active: ai.status !== "no_material" } : r;
+      });
+      const svHtml = svAiRows.length ? `
+        <div class="sub-title">Cross-Check (${svRowsPdf.filter(r => ["ok","warn","fail"].includes(r.status)).length}/${svRowsPdf.length})</div>
+        <div class="def-list">
+          ${svRowsPdf.map(r => `<div class="def-row">
+            <span class="dot" style="background:${SVERKA_STATUS[r.status]?.color || "#aaa"}"></span>
+            <div><b>${e(r.id)} ${e(r.label)}</b>${r.overridden ? ` <span class="tag">ПМ</span>` : ""}${r.doc_ref ? ` <span class="tag">${e(r.doc_ref)}</span>` : ""}${r.note ? `<br><span class="dim">${e(r.note)}</span>` : ""}</div>
+          </div>`).join("")}
+        </div>` : "";
+
       const defHtml = defects.length ? `
         <div class="sub-title">Дефекти (${defects.length})</div>
         <div class="def-list">
@@ -2521,7 +2536,7 @@ ${summaries}
             ${data.summary?`<div class="summary">${e(data.summary)}</div>`:""}
           </div>
         </div>
-        ${checksHtml}${defHtml}${matHtml}
+        ${checksHtml}${svHtml}${defHtml}${matHtml}
       </div>`;
     }).join("");
 
