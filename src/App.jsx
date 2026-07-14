@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { DOC_TYPES, docTypeFromName } from "./sverka.js";
 
 // ─── SheetJS ──────────────────────────────────────────────────────────────────
 async function loadXLSX() {
@@ -299,27 +300,28 @@ async function processFile(file, onProg, sig) {
 }
 
 // ─── File list hook ───────────────────────────────────────────────────────────
-function useFileList() {
+function useFileList(zoneKey) {
   const ref = useRef([]);
   const [, setTick] = useState(0);
   const bump = useCallback(() => setTick(t => t + 1), []);
   const add = useCallback(async (file) => {
     const id = "f" + Date.now() + "_" + Math.random().toString(36).slice(2);
     const ctrl = new AbortController();
-    ref.current = [...ref.current, { _id: id, _loading: true, _progress: 0, _ctrl: ctrl, filename: file.name, preview: null, pages: [], type: null }];
+    const docType = docTypeFromName(file.name, zoneKey);
+    ref.current = [...ref.current, { _id: id, _loading: true, _progress: 0, _ctrl: ctrl, _docType: docType, filename: file.name, preview: null, pages: [], type: null }];
     bump();
     try {
       // Copy file data into memory immediately to release the OS file handle on Windows
       const buf = await file.arrayBuffer();
       const fileCopy = new File([buf], file.name, { type: file.type });
       const d = await processFile(fileCopy, pct => { ref.current = ref.current.map(x => x._id === id ? { ...x, _progress: pct } : x); bump(); }, ctrl.signal);
-      ref.current = ref.current.map(x => x._id === id ? { ...d, _id: id, _loading: false, _done: true } : x);
+      ref.current = ref.current.map(x => x._id === id ? { ...d, _id: id, _docType: docType, _loading: false, _done: true } : x);
     } catch (e) {
       if (e.name === "AbortError") ref.current = ref.current.filter(x => x._id !== id);
       else ref.current = ref.current.map(x => x._id === id ? { ...x, _loading: false, _error: true } : x);
     }
     bump();
-  }, [bump]);
+  }, [bump, zoneKey]);
   const remove = useCallback((idx) => { ref.current = ref.current.filter((_, i) => i !== idx); bump(); }, [bump]);
   const addDone = useCallback((fileObj) => {
     const id = "f" + Date.now() + "_" + Math.random().toString(36).slice(2);
@@ -330,7 +332,11 @@ function useFileList() {
     ref.current = ref.current.map(x => x._id === id ? { ...x, _tag: tag } : x);
     bump();
   }, [bump]);
-  return { files: ref.current, ref, add, remove, addDone, updateTag };
+  const updateDocType = useCallback((id, docType) => {
+    ref.current = ref.current.map(x => x._id === id ? { ...x, _docType: docType || null } : x);
+    bump();
+  }, [bump]);
+  return { files: ref.current, ref, add, remove, addDone, updateTag, updateDocType };
 }
 
 let _dragging = null; // { file: processedFileObj, remove: fn }
@@ -439,82 +445,6 @@ const MAT_STATUS = {
   missing:  { label: "Відсутній",       icon: "🔍", color: "#9b59b6", bg: "#faf5ff" },
   unknown:  { label: "Не перевірено",   icon: "❓", color: "#aaa",    bg: "#f5f5f5" },
 };
-
-const QA_CHECKLIST_DETAIL = `
-════════════════════════════════════════════════════
-ПОВНИЙ QA ЧЕКЛИСТ — перевір КОЖЕН блок по черзі
-════════════════════════════════════════════════════
-
-── БЛОК 1: ТЕХНІЧНІ ДЕФЕКТИ РЕНДЕРУ ──
-Q1.1 ЛЕВІТАЦІЯ: Чи всі предмети стоять на поверхні? Ніжки меблів, декор, килими, плінтуси. Відсутність контактної тіні = левітація. Стільці, столи, рослини, дрібний декор.
-Q1.2 ПЕРЕТИН ГЕОМЕТРІЇ: Об'єкти крізь стіни, подушки крізь спинку, штори крізь підлогу, предмети крізь стелю. Будь-який кліппінг = баг.
-Q1.3 ТЕКСТУРИ: Тайлінг, стрейчінг, неправильний масштаб, текстура перпендикулярно площині, невідповідні шви між поверхнями.
-Q1.4 ЗУБЧАТІСТЬ/ALIASING: Зубчасті краї на кривих, металевих поручнях, тонких об'єктах. Пікселізація на деталях.
-Q1.5 РЕНДЕР-АРТЕФАКТИ: Fireflies, noise, blotchy shadows, темні плями на стелі/кутах, засвіти без джерела.
-Q1.6 ВІДБИТТЯ/МАТЕРІАЛИ: Відбиття логічні? IOR коректний? Метал/скло/кераміка/тканина — фізично правильні властивості. Roughness відповідає матеріалу?
-
-── БЛОК 2: ВІДПОВІДНІСТЬ КРЕСЛЕННЯМ (DRAWINGS) ──
-Q2.1 Якщо надані креслення — перевір кожен пункт:
-• Elevations: висоти, фасади, пропорції будівлі відповідають?
-• Floorplan: розташування меблів, стін, перегородок по плану?
-• Lighting/electrical plan: розташування світильників, розеток відповідає плану?
-• Лейаут меблів: кожен предмет меблів на своєму місці згідно плану?
-• Вікна/двері/ручки/плінтуси/карнизи: всі деталі присутні та на місці?
-• Матеріали/напрямок текстур: якщо вказано на DWG — відповідає?
-• Розкладка плитки/підлог: паттерн, напрямок, стики відповідають кресленню?
-• Вентканали (підлога/стеля): присутні згідно плану?
-• Водостоки (Gutter): наявні та правильно розташовані?
-• Гребінь/коник даху: наявний та правильної форми?
-• Цегляна кладка/сайдинг: відповідає кресленню?
-• Ландшафтний план: озеленення, доріжки, зони відповідають плану?
-
-── БЛОК 3: МУДБОРД / ДИЗАЙН БРИФ / СПЕЦИФІКАЦІЯ ──
-Q2.2 Перевір відповідність брифу:
-• Коментарі/побажання клієнта: всі специфічні запити виконані?
-• Пора року: рослинність, освітлення, атмосфера відповідають (зима/літо/осінь/весна)?
-• День/ніч: тип освітлення, небо, світло у вікнах відповідає?
-• Кольори/матеріали/стиль: відповідають мудборду та брифу?
-• Відповідність референсам/настрою: загальна атмосфера та настрій?
-• Тип освітлення: природне/штучне/змішане — відповідає запиту?
-
-── БЛОК 4: СПЕЦИФІЧНІ МОДЕЛІ ПО ЗАПИТУ ──
-Q2.3 Якщо клієнт запитував конкретні моделі:
-• Меблі: конкретні бренди/моделі присутні?
-• Рослини: специфічні види рослин присутні?
-• Предмети декору: конкретні декоративні предмети присутні?
-• Інші моделі по запиту клієнта: перевір кожен специфічний запит?
-
-── БЛОК 5: РЕОСЕТТИНГ (ДРІБНІ ДЕТАЛІ РЕАЛІЗМУ) ──
-Q3.1 Перевір КОЖЕН пункт геосеттингу:
-• Розетки: присутні на стінах в логічних місцях?
-• Номери машин: читабельні, не безглузді символи?
-• Рослинність/природа: виглядає природно, не copy-paste клони?
-• Вікна/двері: відчинені/зачинені логічно, ручки присутні?
-• Сантехніка: деталі (кран, змішувач, душ) виглядають реалістично?
-• Штори/жалюзі: природно звисають, складки реалістичні?
-• Дороги/знаки/розмітка/зливи: присутні та відповідають країні проекту?
-• Формат часу на техніці/будівлях/вивісках: коректний (не 88:88)?
-• Написи на магазинах/банерах: правильні, не placeholder текст?
-• Одяг на людях (Middle East): культурно відповідний дрес-код?
-• BEK (Background Environment Kit): фон/оточення логічні та доречні?
-
-── БЛОК 6: НАПИСИ / ЛОГО / НЕЙМИНГ ──
-Q3.2 Перевір всі текстові елементи:
-• Логотипи: правильно відображені, не спотворені?
-• Нейминг об'єктів: правильно написані назви?
-• Шрифти: відповідають брендбуку або запиту?
-• Написи англійською: граматично правильні, без помилок?
-• Написи на вивісках/банерах/магазинах: осмислені, без Lorem Ipsum?
-
-── БЛОК 7: CLIENT CRITICAL REQUIREMENTS ──
-Q4.1 Технічні вимоги клієнта:
-• Розрішення/DPI: відповідає ТЗ (наприклад 300 DPI для друку)?
-• Нейминг файлів: відповідає конвенції імен від клієнта?
-• Співвідношення сторін: коректне (16:9 / 4:3 / 1:1 / custom)?
-• Формат файлів: TIFF/маски/PSD якщо запитано?
-• Унікальні запити клієнта: будь-які інші специфічні вимоги?
-• Studio standards ##ACTQ: відповідність стандартам студії?
-════════════════════════════════════════════════════`;
 
 const QUAL_C = `NON (0-54%): плоске освітлення без тіней, геометричні помилки, тайлінг, шум, відсутність глибини, грубі порушення брифу
 MLR (55-79%): фізично коректні матеріали, природне освітлення, чистий рендер, відповідність основним вимогам ТЗ
@@ -698,7 +628,7 @@ async function convertDwgToDxf(dwgFile, apiKey, onProgress) {
 }
 
 // ─── DWG Upload + Convert Slot ────────────────────────────────────────────────
-function DwgSlot({ files, onAddDwg, onRemove, onConverted }) {
+function DwgSlot({ files, onAddDwg, onRemove, onConverted, onDocType }) {
   const inputRef = useRef();
   const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem("cc_api_key") || ""; } catch { return ""; } });
   const [showKey, setShowKey] = useState(false);
@@ -796,6 +726,13 @@ function DwgSlot({ files, onAddDwg, onRemove, onConverted }) {
                 </div>
                 {!conv && <button onClick={() => onRemove(i)} style={{ position: "absolute", top: -5, right: -5, width: 16, height: 16, background: "#e74c3c", color: "#fff", border: "none", borderRadius: "50%", cursor: "pointer", fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>}
                 <div style={{ fontSize: 7, color: "#888", fontFamily: "monospace", textAlign: "center", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 70 }}>{f.filename}</div>
+                {onDocType && !f._loading && !f._error && (
+                  <select value={f._docType || ""} onChange={e => onDocType(f._id, e.target.value)} title="Тип документа для Cross-Check"
+                    style={{ width: 70, fontSize: 8, fontFamily: "monospace", border: `1px solid ${f._docType ? "#3498db" : "#ddd"}`, borderRadius: 3, padding: "1px 2px", outline: "none", color: f._docType ? "#333" : "#bbb", background: "#fff", boxSizing: "border-box", marginTop: 2 }}>
+                    <option value="">тип?</option>
+                    {Object.entries(DOC_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                  </select>
+                )}
               </div>
             );
           })}
@@ -907,79 +844,6 @@ function BlueprintPanel({ drawings, anns, visibleIds, hovId }) {
         ? <BlueprintImg src={dPrev} anns={anns} visibleIds={visibleIds} hovId={hovId} />
         : <div style={{ height: 100, background: "#1a1a1a", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", color: "#555", fontFamily: "monospace", fontSize: 10 }}>немає превью</div>
       }
-    </div>
-  );
-}
-
-// ─── Annotation list ──────────────────────────────────────────────────────────
-function AnnList({ anns, visibleIds, onToggle, onToggleGroup, onHover, groupFilter, onGroupFilter }) {
-  const groups = {};
-  anns.forEach(a => {
-    const g = a._src === "material" ? "🎨 Матеріали"
-      : a.qa_tag ? `#${a.qa_tag} — ${QA_CHECKS.find(q => q.id === a.qa_tag)?.label || a.qa_tag}`
-      : a._src === "item" ? "📋 ТЗ"
-      : a._src === "corr" ? "✏️ Правки"
-      : "⚠️ Дефекти";
-    if (!groups[g]) groups[g] = [];
-    groups[g].push(a);
-  });
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingBottom: 8, borderBottom: "1px solid #f0eeea" }}>
-        <button onClick={() => onToggle("all", true)} style={{ fontSize: 9, fontFamily: "monospace", padding: "3px 9px", borderRadius: 4, background: "#e8f5e9", border: "1px solid #27ae6033", cursor: "pointer", color: "#27ae60" }}>Всі ✓</button>
-        <button onClick={() => onToggle("all", false)} style={{ fontSize: 9, fontFamily: "monospace", padding: "3px 9px", borderRadius: 4, background: "#fff5f5", border: "1px solid #e74c3c33", cursor: "pointer", color: "#e74c3c" }}>Всі ✗</button>
-        <button onClick={() => onGroupFilter(null)} style={{ fontSize: 9, fontFamily: "monospace", padding: "3px 9px", borderRadius: 4, background: !groupFilter ? "#1a1a1a" : "#eee", border: "none", cursor: "pointer", color: !groupFilter ? "#fff" : "#555" }}>Показати всі</button>
-      </div>
-      {Object.entries(groups).map(([gname, items]) => {
-        const col = items[0]?.qa_tag ? (QC[items[0].qa_tag] || "#888")
-          : items[0]?._src === "material" ? "#9b59b6"
-          : items[0]?._src === "item" ? "#3498db"
-          : items[0]?._src === "corr" ? "#e67e22"
-          : "#e74c3c";
-        const allVis = items.every(a => visibleIds.has(`${a._src}:${a._srcIdx}`));
-        const someVis = items.some(a => visibleIds.has(`${a._src}:${a._srcIdx}`));
-        const isFiltered = groupFilter === gname;
-        return (
-          <div key={gname} style={{ border: `1px solid ${col}22`, borderRadius: 8, overflow: "hidden" }}>
-            <div style={{ background: col + "14", padding: "6px 10px", display: "flex", alignItems: "center", gap: 7 }}>
-              <button onClick={() => onToggleGroup(items, !allVis)} style={{ width: 18, height: 18, borderRadius: 3, border: `1.5px solid ${col}`, background: allVis ? col : "transparent", cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                {allVis && <span style={{ color: "#fff", fontSize: 9, lineHeight: 1 }}>✓</span>}
-                {!allVis && someVis && <span style={{ background: col, width: 8, height: 8, borderRadius: 1, display: "block" }} />}
-              </button>
-              <span style={{ fontSize: 10, fontWeight: 700, color: col, fontFamily: "monospace", flex: 1 }}>{gname}</span>
-              <span style={{ fontSize: 9, background: col, color: "#fff", borderRadius: 10, padding: "0 5px", fontFamily: "monospace" }}>{items.length}</span>
-              <button onClick={() => onGroupFilter(isFiltered ? null : gname)} style={{ fontSize: 8, background: isFiltered ? col : "transparent", border: `1px solid ${col}`, color: isFiltered ? "#fff" : col, padding: "2px 7px", borderRadius: 10, cursor: "pointer", fontFamily: "monospace" }}>
-                {isFiltered ? "скасувати" : "фільтр"}
-              </button>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column" }}>
-              {items.map(a => {
-                const key = `${a._src}:${a._srcIdx}`;
-                const vis = visibleIds.has(key);
-                const sc = a._src === "material" ? MAT_STATUS[a.status] : STATUS[a.status];
-                const iCol = a.qa_tag ? (QC[a.qa_tag] || col) : a._src === "material" ? (MAT_STATUS[a.status]?.color || col) : (STATUS[a.status]?.color || col);
-                return (
-                  <div key={key} onMouseEnter={() => onHover(key)} onMouseLeave={() => onHover(null)}
-                    style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "7px 10px", background: "#fff", borderBottom: "1px solid #f5f3ef", opacity: vis ? 1 : 0.38, transition: "opacity 0.15s" }}>
-                    <button onClick={() => onToggle(key, !vis)} style={{ width: 16, height: 16, borderRadius: 3, border: `1.5px solid ${iCol}`, background: vis ? iCol : "transparent", cursor: "pointer", flexShrink: 0, marginTop: 2, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      {vis && <span style={{ color: "#fff", fontSize: 8, lineHeight: 1 }}>✓</span>}
-                    </button>
-                    <div style={{ width: 18, height: 18, background: iCol, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8, color: "#fff", fontFamily: "monospace", fontWeight: "bold", flexShrink: 0, marginTop: 1 }}>{a._label}</div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
-                        <span style={{ fontSize: 11, fontWeight: 600, color: "#333", fontFamily: "monospace" }}>{a.comment || a.title || a.name}</span>
-                        {sc && <span style={{ fontSize: 8, background: sc.bg || "#f5f5f5", color: sc.color || "#888", padding: "1px 5px", borderRadius: 3, fontFamily: "monospace" }}>{sc.icon} {sc.label}</span>}
-                        {a.zone && <span style={{ fontSize: 8, color: "#3498db", fontFamily: "monospace" }}>📍</span>}
-                      </div>
-                      {(a.note || a.description) && <div style={{ fontSize: 10, color: "#777", fontFamily: "monospace", marginTop: 1, lineHeight: 1.45 }}>{a.note || a.description}</div>}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        );
-      })}
     </div>
   );
 }
@@ -1114,7 +978,6 @@ function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, stat
   const [selR, setSelR] = useState(0);
   const [hovId, setHovId] = useState(null);
   const [visibleIds, setVisibleIds] = useState(null);
-  const [groupFilter] = useState(null);
   const [irrelevant, setIrrelevant] = useState(new Set()); // "item:0", "corr:1", "defect:2"
   const [reviewing, setReviewing] = useState(false);
   const [showTz, setShowTz] = useState(false);
@@ -1167,17 +1030,6 @@ function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, stat
   }, [data]); // eslint-disable-line
 
   const effVisible = visibleIds || new Set(allAnns.map(a => `${a._src}:${a._srcIdx}`));
-
-  const filteredAnns = groupFilter
-    ? allAnns.filter(a => {
-        if (groupFilter === "🎨 Матеріали") return a._src === "material";
-        if (groupFilter.startsWith("#")) return a.qa_tag && groupFilter.includes(a.qa_tag);
-        if (groupFilter === "📋 ТЗ") return a._src === "item";
-        if (groupFilter === "✏️ Правки") return a._src === "corr";
-        if (groupFilter === "⚠️ Дефекти") return a._src === "defect";
-        return true;
-      })
-    : allAnns;
 
   const handleToggle = (keyOrAll, vis) => {
     setVisibleIds(prev => {
@@ -1276,10 +1128,10 @@ function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, stat
                 )}
                 <div style={{ background: "#111", borderRadius: 10, padding: 8 }}>
                   <div style={{ fontSize: 9, color: "#27ae60", fontFamily: "monospace", marginBottom: 6, letterSpacing: "0.1em" }}>
-                    РАКУРС {num}{total > 1 ? ` з ${total}` : ""} — {filteredAnns.filter(a => a.zone && effVisible.has(`${a._src}:${a._srcIdx}`)).length} відміток
+                    РАКУРС {num}{total > 1 ? ` з ${total}` : ""} — {allAnns.filter(a => a.zone && effVisible.has(`${a._src}:${a._srcIdx}`)).length} відміток
                   </div>
                   {activePrev
-                    ? <AnnotatedImage src={activePrev} anns={filteredAnns} visibleIds={effVisible} hovId={hovId} />
+                    ? <AnnotatedImage src={activePrev} anns={allAnns} visibleIds={effVisible} hovId={hovId} />
                     : <div style={{ height: 260, display: "flex", alignItems: "center", justifyContent: "center", color: "#555", fontFamily: "monospace" }}>немає превью</div>
                   }
                 </div>
@@ -1561,7 +1413,7 @@ function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, stat
                   {/* КРЕСЛЕННЯ */}
                   {tab === "drawings" && (
                     <div style={{ padding: 14 }}>
-                      <BlueprintPanel drawings={drawings} anns={filteredAnns} visibleIds={effVisible} hovId={hovId} />
+                      <BlueprintPanel drawings={drawings} anns={allAnns} visibleIds={effVisible} hovId={hovId} />
                     </div>
                   )}
 
@@ -1877,7 +1729,7 @@ function Grid({ items, perData, statuses, globalSummary, onSelect, onRetry, mode
 }
 
 // ─── Upload box ───────────────────────────────────────────────────────────────
-function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", note, onTag }) {
+function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", note, onTag, onDocType }) {
   const inputRef = useRef(); const [drag, setDrag] = useState(false); const ctr = useRef(0);
   const onDrop = e => {
     e.preventDefault(); setDrag(false); ctr.current = 0;
@@ -1926,6 +1778,13 @@ function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", n
               {onTag && f._done && !f._loading && (
                 <input value={f._tag || ""} onChange={e => onTag(f._id, e.target.value)} placeholder="пункт ТЗ" title="Прив'язати до пункту ТЗ" style={{ width: 70, fontSize: 8, fontFamily: "monospace", border: "1px solid #ddd", borderRadius: 3, padding: "2px 4px", outline: "none", color: "#555", boxSizing: "border-box", textAlign: "center" }} />
               )}
+              {onDocType && f._done && !f._loading && (
+                <select value={f._docType || ""} onChange={e => onDocType(f._id, e.target.value)} title="Тип документа для Cross-Check"
+                  style={{ width: 70, fontSize: 8, fontFamily: "monospace", border: `1px solid ${f._docType ? color : "#ddd"}`, borderRadius: 3, padding: "1px 2px", outline: "none", color: f._docType ? "#333" : "#bbb", background: "#fff", boxSizing: "border-box", marginTop: 2 }}>
+                  <option value="">тип?</option>
+                  {Object.entries(DOC_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+              )}
             </div>
             );
           })}
@@ -1972,11 +1831,8 @@ export default function App() {
   const [tzParsing, setTzParsing] = useState(false);
   const cachedPartsRef = useRef(null); // зберігає cacheParts після runAnalysis для retry
   const analysisRunningRef = useRef(false);
-  const [openaiKey, setOpenaiKey] = useState(() => { try { return localStorage.getItem("openai_api_key") || ""; } catch { return ""; } });
-  const saveOpenaiKey = k => { setOpenaiKey(k); try { localStorage.setItem("openai_api_key", k); } catch { /* ignore */ } };
-
-  const renders = useFileList(); const briefs = useFileList(); const refs = useFileList(); const draws = useFileList();
-  const revBriefs = useFileList(); const revRefs = useFileList(); const revDraws = useFileList();
+  const renders = useFileList("renders"); const briefs = useFileList("briefs"); const refs = useFileList("refs"); const draws = useFileList("draws");
+  const revBriefs = useFileList("briefs"); const revRefs = useFileList("refs"); const revDraws = useFileList("draws");
 
   // Після конвертації DWG→DXF оновлюємо файл у списку
   const handleDwgConverted = useCallback((fileList, dwgFile, dxfText) => {
@@ -2757,9 +2613,6 @@ async function loadFromArchivizer() {
     const proxyUrl = u => (u || "").replace("https://static.archivizer.com", "/archivizer-static");
 
     try {
-      // 1. Деталі задачі — пропускаємо, API не підтримує пошук по slug
-      let taskInfo = {};
-
       // 2. Повідомлення задачі
       setArchivizerStatus({ loading: true, msg: "Завантаження повідомлень..." });
       let messages = [];
@@ -2782,9 +2635,6 @@ async function loadFromArchivizer() {
 
       // Автозаповнення поля ТЗ — задача + повідомлення
       const tzLines = [];
-      if (taskInfo.name || taskInfo.title) tzLines.push(`ЗАДАЧА: ${taskInfo.name || taskInfo.title}`);
-      if (taskInfo.description || taskInfo.body) tzLines.push(`ОПИС:\n${taskInfo.description || taskInfo.body || ""}`);
-      if (taskInfo.stage?.name) tzLines.push(`СТАДІЯ: ${taskInfo.stage.name}`);
       if (messages.length > 0) {
         tzLines.push("\nПОВІДОМЛЕННЯ:");
         messages.forEach(m => {
@@ -2821,12 +2671,6 @@ async function loadFromArchivizer() {
       let categories = {}; // index -> "render"|"brief"|"reference"|"drawing"|"skip"
       if (anthropicKey.trim()) {
         setArchivizerStatus({ loading: true, msg: "Клод аналізує файли задачі..." });
-        const taskContext = [
-          taskInfo.name || taskInfo.title ? `Назва: ${taskInfo.name || taskInfo.title}` : "",
-          taskInfo.description || taskInfo.body ? `Опис: ${(taskInfo.description || taskInfo.body || "").slice(0, 800)}` : "",
-          taskInfo.stage?.name ? `Стадія: ${taskInfo.stage.name}` : "",
-        ].filter(Boolean).join("\n");
-
         const msgContext = messages.length > 0
           ? messages.slice(-30).map(m => {
               const author = m.user?.name || m.author?.name || m.sender?.name || "?";
@@ -2841,7 +2685,7 @@ async function loadFromArchivizer() {
         ).join("\n");
 
         const prompt = `Ти — QA-асистент для перевірки 3D-рендерів інтер'єрів.
-${taskContext ? `\nКонтекст задачі:\n${taskContext}\n` : ""}${msgContext ? `\nПовідомлення в задачі (від клієнта та команди):\n${msgContext}\n` : ""}
+${msgContext ? `\nПовідомлення в задачі (від клієнта та команди):\n${msgContext}\n` : ""}
 Список файлів задачі:
 ${fileList}
 
@@ -2957,13 +2801,6 @@ ${fileList}
           {step === 2 && perData.some(d => d && !d.error) && <button onClick={generateReport} style={{ background: "transparent", border: "1px solid #27ae60", color: "#27ae60", padding: "5px 12px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 4 }}>📄 PDF</button>}
           <input
             type="password"
-            value={openaiKey}
-            onChange={e => saveOpenaiKey(e.target.value)}
-            placeholder="OpenAI key (DALL-E)"
-            style={{ background: "#111", border: `1px solid ${openaiKey ? "#3498db" : "#555"}`, color: "#aaa", padding: "5px 10px", fontSize: 11, fontFamily: "monospace", borderRadius: 4, width: 160, outline: "none" }}
-          />
-          <input
-            type="password"
             value={anthropicKey}
             onChange={e => saveAnthropicKey(e.target.value)}
             placeholder="Anthropic API key"
@@ -3048,13 +2885,14 @@ ${fileList}
                 <textarea value={briefText} onChange={e => setBriefText(e.target.value)} placeholder={"• Інтер'єр вітальні у скандинавському стилі\n• Або залиште порожнім — ТЗ у файлах нижче"} style={{ width: "100%", minHeight: 80, padding: "10px 12px", border: "1px solid #ddd", borderRadius: 8, background: "#fff", fontSize: 13, lineHeight: 1.7, fontFamily: "monospace", resize: "vertical", color: "#333", outline: "none", boxSizing: "border-box" }} />
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-                <UploadBox label="БРИФИ" note="PDF, зобр., Excel/CSV" files={briefs.files} onAdd={briefs.add} onAddDone={briefs.addDone} onRemove={briefs.remove} color="#e74c3c" />
-                <UploadBox label="РЕФЕРЕНСИ" note="Зображення" files={refs.files} onAdd={refs.add} onAddDone={refs.addDone} onRemove={refs.remove} onTag={refs.updateTag} color="#e67e22" />
+                <UploadBox label="БРИФИ" note="PDF, зобр., Excel/CSV" files={briefs.files} onAdd={briefs.add} onAddDone={briefs.addDone} onRemove={briefs.remove} onDocType={briefs.updateDocType} color="#e74c3c" />
+                <UploadBox label="РЕФЕРЕНСИ" note="Зображення" files={refs.files} onAdd={refs.add} onAddDone={refs.addDone} onRemove={refs.remove} onTag={refs.updateTag} onDocType={refs.updateDocType} color="#e67e22" />
                 <DwgSlot
                   files={draws.files}
                   onAddDwg={draws.add}
                   onRemove={draws.remove}
                   onConverted={(dwgFile, dxfText) => handleDwgConverted(draws, dwgFile, dxfText)}
+                  onDocType={draws.updateDocType}
                 />
               </div>
             </div>
@@ -3078,13 +2916,14 @@ ${fileList}
                 <textarea value={briefText} onChange={e => setBriefText(e.target.value)} placeholder={"• Інтер'єр вітальні у скандинавському стилі\n• Або залиште порожнім — ТЗ у файлах нижче"} style={{ width: "100%", minHeight: 80, padding: "10px 12px", border: "1px solid #ddd", borderRadius: 8, background: "#fff", fontSize: 13, lineHeight: 1.7, fontFamily: "monospace", resize: "vertical", color: "#333", outline: "none", boxSizing: "border-box" }} />
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-                <UploadBox label="БРИФИ" note="PDF, зобр., Excel/CSV" files={briefs.files} onAdd={briefs.add} onAddDone={briefs.addDone} onRemove={briefs.remove} color="#e74c3c" />
-                <UploadBox label="РЕФЕРЕНСИ" note="Зображення" files={refs.files} onAdd={refs.add} onAddDone={refs.addDone} onRemove={refs.remove} onTag={refs.updateTag} color="#e67e22" />
+                <UploadBox label="БРИФИ" note="PDF, зобр., Excel/CSV" files={briefs.files} onAdd={briefs.add} onAddDone={briefs.addDone} onRemove={briefs.remove} onDocType={briefs.updateDocType} color="#e74c3c" />
+                <UploadBox label="РЕФЕРЕНСИ" note="Зображення" files={refs.files} onAdd={refs.add} onAddDone={refs.addDone} onRemove={refs.remove} onTag={refs.updateTag} onDocType={refs.updateDocType} color="#e67e22" />
                 <DwgSlot
                   files={draws.files}
                   onAddDwg={draws.add}
                   onRemove={draws.remove}
                   onConverted={(dwgFile, dxfText) => handleDwgConverted(draws, dwgFile, dxfText)}
+                  onDocType={draws.updateDocType}
                 />
               </div>
               <div style={{ background: "#f0faf4", border: "1px solid #27ae6033", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "#555", fontFamily: "monospace" }}>
@@ -3110,13 +2949,14 @@ ${fileList}
               <button onClick={() => setPairs(p => [...p, { id: Date.now(), comment: "" }])} style={{ background: "transparent", border: "2px dashed #ddd", color: "#aaa", padding: "11px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 10 }}>+ додати раунд</button>
               <div style={{ height: 1, background: "#ddd" }} />
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-                <UploadBox label="БРИФИ" note="PDF, Excel/CSV" files={revBriefs.files} onAdd={revBriefs.add} onAddDone={revBriefs.addDone} onRemove={revBriefs.remove} color="#e74c3c" />
-                <UploadBox label="РЕФЕРЕНСИ" files={revRefs.files} onAdd={revRefs.add} onAddDone={revRefs.addDone} onRemove={revRefs.remove} color="#e67e22" />
+                <UploadBox label="БРИФИ" note="PDF, Excel/CSV" files={revBriefs.files} onAdd={revBriefs.add} onAddDone={revBriefs.addDone} onRemove={revBriefs.remove} onDocType={revBriefs.updateDocType} color="#e74c3c" />
+                <UploadBox label="РЕФЕРЕНСИ" files={revRefs.files} onAdd={revRefs.add} onAddDone={revRefs.addDone} onRemove={revRefs.remove} onDocType={revRefs.updateDocType} color="#e67e22" />
                 <DwgSlot
                   files={revDraws.files}
                   onAddDwg={revDraws.add}
                   onRemove={revDraws.remove}
                   onConverted={(dwgFile, dxfText) => handleDwgConverted(revDraws, dwgFile, dxfText)}
+                  onDocType={revDraws.updateDocType}
                 />
               </div>
             </div>
