@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { DOC_TYPES, docTypeFromName, activeSverka, sverkaPromptBlock } from "./sverka.js";
+import { DOC_TYPES, SVERKA_STATUS, docTypeFromName, activeSverka, sverkaRows, sverkaPromptBlock } from "./sverka.js";
 
 // ─── SheetJS ──────────────────────────────────────────────────────────────────
 async function loadXLSX() {
@@ -504,7 +504,8 @@ function useAnnotatedCanvas(imgRef, anns, visibleIds, hovId) {
       const { x, y, w, h } = ann.zone;
       const isHov = hovId === key;
       let col;
-      if (ann._src === "material") col = MAT_STATUS[ann.status]?.color || "#9b59b6";
+      if (ann._src === "sverka") col = SVERKA_STATUS[ann.status]?.color || "#888";
+      else if (ann._src === "material") col = MAT_STATUS[ann.status]?.color || "#9b59b6";
       else col = ann.qa_tag ? (QC[ann.qa_tag] || "#888") : (STATUS[ann.status]?.color || "#888");
       const cx = x / 100 * canvas.width, cy = y / 100 * canvas.height;
       const cw = Math.max(w / 100 * canvas.width, 24), ch = Math.max(h / 100 * canvas.height, 18);
@@ -974,7 +975,7 @@ function TabBar({ tabs, active, onSelect }) {
 }
 
 // ─── Detail page ──────────────────────────────────────────────────────────────
-function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, status, apiError, onBack, mode, onReview, tzCards = [], tzAnnotation = "", tzClientComments = [] }) {
+function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, status, apiError, onBack, mode, onReview, tzCards = [], tzAnnotation = "", tzClientComments = [], sverkaChecks = [], onSverkaOverride }) {
   const [selR, setSelR] = useState(0);
   const [hovId, setHovId] = useState(null);
   const [visibleIds, setVisibleIds] = useState(null);
@@ -988,6 +989,10 @@ function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, stat
   const materials = data?.materials || [];
   const checks = data?.checks || [];
   const tz_parsed = data?.tz_parsed || [];
+  const svRows = sverkaRows(data?.sverka, data?.sverkaOverrides, sverkaChecks.length ? sverkaChecks : activeSverka([], mode));
+  const svChecked = svRows.filter(r => ["ok", "warn", "fail"].includes(r.status)).length;
+  const svFail = svRows.filter(r => r.status === "fail").length;
+  const svNoMat = svRows.filter(r => r.status === "no_material").length;
   const quality = data?.quality;
   const isRev = mode === "revision";
 
@@ -1022,6 +1027,7 @@ function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, stat
     ...corr.map((x, i) => ({ ...x, comment: x.title, status: "partial", _src: "corr", _srcIdx: i, _label: i + 1 })),
     ...defects.map((x, i) => ({ ...x, comment: x.title, status: x.severity === "high" ? "not_fixed" : "partial", _src: "defect", _srcIdx: i, _label: i + 1 })),
     ...materials.filter(m => m.zone).map((m, i) => ({ ...m, comment: m.name, _src: "material", _srcIdx: i, _label: i + 1 })),
+    ...svRows.filter(r => r.zone).map((r, i) => ({ ...r, comment: r.label, qa_tag: null, _src: "sverka", _srcIdx: i, _label: r.id.slice(1) })),
   ];
 
   useEffect(() => {
@@ -1055,6 +1061,7 @@ function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, stat
   const critCount = defects.filter(d => d.severity === "high").length;
 
   const tabs1 = [
+    { id: "sverka", label: `Cross-Check (${svChecked}/${svRows.length})` },
     checks.length > 0 && { id: "report", label: "Звіт" },
     tz_parsed.length > 0 && { id: "tz_parsed", label: "ТЗ розбір" },
     { id: "overview", label: "Заключення" },
@@ -1178,6 +1185,50 @@ function DetailPage({ renderFiles, beforeFiles, data, drawings, num, total, stat
 
                 {/* Tab content */}
                 <div style={{ overflowY: "auto", maxHeight: "calc(100vh - 200px)" }}>
+
+                  {/* CROSS-CHECK */}
+                  {tab === "sverka" && (
+                    <div style={{ display: "flex", flexDirection: "column" }}>
+                      <div style={{ padding: "10px 16px", background: "#faf9f7", borderBottom: "1px solid #f0eeea" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                          <span style={{ fontSize: 11, fontFamily: "monospace", fontWeight: 700, color: "#333" }}>{svChecked}/{svRows.length} перевірено</span>
+                          {svFail > 0 && <span style={{ fontSize: 9, background: "#e74c3c", color: "#fff", padding: "1px 7px", borderRadius: 8, fontFamily: "monospace" }}>{svFail} ❌</span>}
+                          {svNoMat > 0 && <span style={{ fontSize: 9, background: "#eee", color: "#888", padding: "1px 7px", borderRadius: 8, fontFamily: "monospace" }}>{svNoMat} без матеріалів</span>}
+                          <span style={{ fontSize: 9, color: "#bbb", fontFamily: "monospace", marginLeft: "auto" }}>клік по іконці = вердикт ПМ</span>
+                        </div>
+                        <div style={{ height: 4, background: "#e8e6e1", borderRadius: 2, overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: `${svRows.length ? Math.round(svChecked / svRows.length * 100) : 0}%`, background: svFail > 0 ? "#e67e22" : "#27ae60", borderRadius: 2, transition: "width 0.4s" }} />
+                        </div>
+                      </div>
+                      {svRows.map(r => {
+                        const cfg = SVERKA_STATUS[r.status];
+                        const clickable = r.active && ["ok", "warn", "fail"].includes(r.status) && !!onSverkaOverride;
+                        const nextStatus = { ok: "warn", warn: "fail", fail: "ok" }[r.status];
+                        const key = `sverka:${r.id}`;
+                        return (
+                          <div key={r.id} onMouseEnter={() => r.zone && setHovId(key)} onMouseLeave={() => setHovId(null)}
+                            style={{ padding: "10px 16px", borderBottom: "1px solid #f0eeea", display: "flex", gap: 10, alignItems: "flex-start", background: hovId === key ? "#faf9f7" : "#fff", opacity: r.active ? 1 : 0.55 }}>
+                            <button onClick={clickable ? () => onSverkaOverride(r.id, nextStatus) : undefined}
+                              title={clickable ? `Змінити на: ${SVERKA_STATUS[nextStatus].label}` : undefined}
+                              style={{ background: "none", border: "none", fontSize: 15, lineHeight: 1, cursor: clickable ? "pointer" : "default", padding: 0, flexShrink: 0, marginTop: 1 }}>
+                              {cfg.icon}
+                            </button>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                                <span style={{ fontSize: 9, fontFamily: "monospace", fontWeight: 700, color: cfg.color, background: cfg.color + "18", padding: "1px 5px", borderRadius: 3 }}>{r.id}</span>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: r.active ? "#333" : "#aaa" }}>{r.label}</span>
+                                {r.overridden && <span style={{ fontSize: 8, background: "#1a1a1a", color: "#fff", padding: "1px 5px", borderRadius: 3, fontFamily: "monospace" }}>ПМ</span>}
+                                {r.doc_ref && <span style={{ fontSize: 8, background: "#f0eeea", color: "#888", padding: "1px 5px", borderRadius: 3, fontFamily: "monospace" }}>📎 {r.doc_ref}</span>}
+                                {r.zone && <span style={{ fontSize: 8, color: "#3498db", fontFamily: "monospace" }}>📍</span>}
+                              </div>
+                              {r.note && <div style={{ fontSize: 11, color: "#777", lineHeight: 1.5, marginTop: 2 }}>{r.note}</div>}
+                              {r.status === "no_material" && <div style={{ fontSize: 10, color: "#bbb", fontFamily: "monospace", marginTop: 2 }}>додай {r.needs.map(n => DOC_TYPES[n]).join(" / ")} у пакет — пункт увімкнеться</div>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
 
                   {/* ТЗ РОЗБІР */}
                   {tab === "tz_parsed" && (
@@ -2275,6 +2326,18 @@ ${summaries}
     }
   }
 
+  function handleSverkaOverride(renderIdx, checkId, status) {
+    setPerData(prev => {
+      const next = [...prev];
+      const cur = next[renderIdx] || {};
+      const overrides = { ...(cur.sverkaOverrides || {}) };
+      if (status) overrides[checkId] = status; else delete overrides[checkId];
+      next[renderIdx] = { ...cur, sverkaOverrides: overrides };
+      saveSession({ savedAt: new Date().toISOString(), mode, perData: next, globalSum, consistency, tzCards: tzCards.map(c => ({ ...c, imgPreview: null })), tzAnnotation, tzClientComments });
+      return next;
+    });
+  }
+
   function openPrintWindow(html, filename) {
     if (window.electronAPI?.savePdf) {
       window.electronAPI.savePdf(html).then(res => {
@@ -2806,6 +2869,10 @@ ${fileList}
     if (isRev) { const p = vPairs[i]; return { renderFiles: getPF(p.id, "after").filter(f => !f._loading && !f._error), beforeFiles: getPF(p.id, "before").filter(f => !f._loading && !f._error), drawings: revDraws.files }; }
     return { renderFiles: [rImages[i]], beforeFiles: [], drawings: draws.files };
   };
+  const allDocFiles = isRev
+    ? [...revBriefs.files, ...revRefs.files, ...revDraws.files]
+    : [...briefs.files, ...refs.files, ...draws.files];
+  const sverkaChecksUi = activeSverka(allDocFiles.map(f => f._docType), mode);
   const detailProps = sel !== null && sel < gridItems.length ? getDP(sel) : null;
 
   return (
@@ -3072,6 +3139,8 @@ ${fileList}
           tzCards={tzCards}
           tzAnnotation={tzAnnotation}
           tzClientComments={tzClientComments}
+          sverkaChecks={sverkaChecksUi}
+          onSverkaOverride={(checkId, status) => handleSverkaOverride(sel, checkId, status)}
           onReview={async (excluded) => {
             const ri = sel;
             const rImages = readyFiles(renders).filter(f => f.pages?.some(p => p.b64));
