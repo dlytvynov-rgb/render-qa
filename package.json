@@ -5,10 +5,10 @@
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
-    "proxy": "node proxy.js",
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
+    "test": "vitest run",
     "preview": "vite preview",
     "electron": "npm run build && electron electron/main.js",
     "dist": "npm run build && electron-builder"
@@ -16,14 +16,29 @@
   "build": {
     "appId": "com.renderqa.app",
     "productName": "Render QA",
-    "directories": { "output": "release" },
-    "files": ["dist/**", "electron/**", "node_modules/**", "package.json"],
-    "win": { "target": "portable", "forceCodeSigning": false },
-    "portable": { "artifactName": "RenderQA.exe" },
-    "mac": { "target": "dmg", "forceCodeSigning": false, "artifactName": "RenderQA.dmg" }
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "node_modules/**",
+      "package.json"
+    ],
+    "win": {
+      "target": "portable",
+      "forceCodeSigning": false
+    },
+    "portable": {
+      "artifactName": "RenderQA.exe"
+    },
+    "mac": {
+      "target": "dmg",
+      "forceCodeSigning": false,
+      "artifactName": "RenderQA.dmg"
+    }
   },
   "dependencies": {
-    "cors": "^2.8.6",
     "express": "^5.2.1",
     "http-proxy-middleware": "^3.0.5",
     "react": "^19.2.0",
@@ -41,6 +56,7 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "vite": "^7.3.1",
-    "vite-plugin-singlefile": "^2.3.0"
+    "vite-plugin-singlefile": "^2.3.0",
+    "vitest": "^4.1.10"
   }
 }
