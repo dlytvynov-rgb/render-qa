@@ -3081,7 +3081,7 @@ ${fileList}
         />
       )}
       {step === 1 && !tzReview && (
-        <div style={{ maxWidth: "100%", width: "100%", padding: "22px 24px", display: "flex", flexDirection: "column", gap: 16, boxSizing: "border-box" }}>
+        <div style={{ maxWidth: 1100, margin: "0 auto", padding: "30px 32px", display: "flex", flexDirection: "column", gap: 20, boxSizing: "border-box" }}>
           <div>
             <div className="vp-label" style={{ marginBottom: 8 }}><b style={{ color: "var(--dim)", fontWeight: 500 }}>01 ПАКЕТ</b> → 02 ПІДТВЕРДЖЕННЯ ТЗ → 03 РЕЗУЛЬТАТ</div>
             <div style={{ fontSize: 27, fontWeight: 700, letterSpacing: "-0.025em" }}>Перевір рендер <span className="vp-grad">до здачі клієнту</span></div>
@@ -3102,13 +3102,6 @@ ${fileList}
               </div>
             ))}
           </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-            {QA_CHECKS.map(q => <div key={q.id} style={{ display: "flex", alignItems: "center", gap: 4, background: "var(--panel)", border: `1px solid ${q.color}33`, borderLeft: `3px solid ${q.color}`, borderRadius: "0 5px 5px 0", padding: "3px 8px" }}><span style={{ fontSize: 9, fontWeight: "bold", color: q.color, fontFamily: "var(--font-mono)" }}>#{q.id}</span><span style={{ fontSize: 10, color: "var(--dim)", fontFamily: "var(--font-mono)" }}>{q.label}</span></div>)}
-          </div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {Object.entries(STANDARDS).map(([k, v]) => <div key={k} style={{ flex: 1, minWidth: 140, background: "var(--panel)", border: `1px solid ${v.color}44`, borderLeft: `4px solid ${v.color}`, borderRadius: "0 8px 8px 0", padding: "7px 11px" }}><div style={{ fontSize: 13, fontWeight: 700, color: v.color, fontFamily: "var(--font-mono)", marginBottom: 2 }}>{k}</div><div style={{ fontSize: 10, color: "var(--dim)", fontFamily: "var(--font-mono)" }}>{v.desc}</div></div>)}
-          </div>
-          <div style={{ height: 1, background: "var(--line)" }} />
           {mode === "tz-review" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <div>
@@ -3131,9 +3124,11 @@ ${fileList}
           )}
           {mode === "first" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              <div className="vp-panel" style={{ borderRadius: 10, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
-                <div className="vp-label" style={{ color: "var(--info)", marginBottom: 4 }}>ARCHIVIZER</div>
-                {!archivizerToken.trim() && <div style={{ fontSize: 10, color: "var(--warn)", fontFamily: "var(--font-mono)" }}>токен не заданий — додай у ⚙ справа вгорі</div>}
+              <div className="vp-panel" style={{ borderRadius: 12, padding: "10px 14px", display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span className="vp-label" style={{ color: "var(--info)" }}>ARCHIVIZER</span>
+                  {!archivizerToken.trim() && <span style={{ fontSize: 10, color: "var(--warn)", fontFamily: "var(--font-mono)" }}>токен не заданий — додай у ⚙</span>}
+                </div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <input type="text" value={archivizerUrl} onChange={e => setArchivizerUrl(e.target.value)} onKeyDown={e => e.key === "Enter" && loadFromArchivizer()} placeholder="https://archivizer.com/tasks/WF8PSTKA" className="vp-input" style={{ flex: 1 }} />
                   <button onClick={loadFromArchivizer} disabled={archivizerStatus?.loading} style={{ background: archivizerStatus?.loading ? "#333" : "#2980b9", border: "none", color: "#fff", borderRadius: 4, padding: "6px 16px", cursor: archivizerStatus?.loading ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "monospace", whiteSpace: "nowrap" }}>
