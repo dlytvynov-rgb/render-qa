@@ -672,8 +672,8 @@ function DwgSlot({ files, onAddDwg, onRemove, onConverted, onDocType }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-      <div style={{ fontSize: 10, letterSpacing: "0.14em", color: "#888", marginBottom: 2, fontFamily: "monospace" }}>КРЕСЛЕННЯ</div>
-      <div style={{ fontSize: 9, color: "#bbb", fontFamily: "monospace", marginBottom: 5 }}>PDF · DXF · <span style={{ color: "#3498db" }}>DWG</span> · JPG/PNG</div>
+      <div className="vp-label" style={{ marginBottom: 2 }}>КРЕСЛЕННЯ</div>
+      <div style={{ fontSize: 9, color: "var(--dim)", fontFamily: "var(--font-mono)", marginBottom: 5 }}>PDF · DXF · <span style={{ color: "#3498db" }}>DWG</span> · JPG/PNG</div>
 
       {/* Зона завантаження */}
       <div
@@ -681,7 +681,8 @@ function DwgSlot({ files, onAddDwg, onRemove, onConverted, onDocType }) {
         onDragLeave={e => { e.preventDefault(); if (--ctr.current === 0) setDrag(false); }}
         onDragOver={e => e.preventDefault()}
         onDrop={e => { e.preventDefault(); setDrag(false); ctr.current = 0; handleFiles(e.dataTransfer.files); }}
-        style={{ border: `2px dashed ${drag ? "#3498db" : "#ddd"}`, borderRadius: hasDwg ? "10px 10px 0 0" : 10, padding: 8, background: drag ? "#3498db11" : "#fafafa", minHeight: 90, display: "flex", flexDirection: "column", justifyContent: files.length === 0 ? "center" : "flex-start" }}
+        className={`vp-dropzone${drag ? " vp-dropzone--drag" : ""}`}
+        style={{ borderRadius: hasDwg ? "8px 8px 0 0" : 8, padding: 8, minHeight: 90, display: "flex", flexDirection: "column", justifyContent: files.length === 0 ? "center" : "flex-start" }}
       >
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", justifyContent: files.length === 0 ? "center" : "flex-start" }}>
           {files.map((f, i) => {
@@ -694,8 +695,8 @@ function DwgSlot({ files, onAddDwg, onRemove, onConverted, onDocType }) {
               <div key={id} style={{ position: "relative", flexShrink: 0 }}>
                 <div style={{
                   width: 70, height: 70, borderRadius: 5,
-                  border: `2px solid ${isDone ? "#27ae60" : conv ? "#e67e22" : isDwg && hasText ? "#3498db" : "#ddd"}`,
-                  background: isDwg ? (isDone ? "#0a1f0a" : "#0a1929") : "#f0eeea",
+                  border: `2px solid ${isDone ? "#27ae60" : conv ? "#e67e22" : isDwg && hasText ? "#3498db" : "var(--line)"}`,
+                  background: isDwg ? (isDone ? "#0a1f0a" : "#0a1929") : "var(--void)",
                   display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2
                 }}>
                   {conv ? (
@@ -716,7 +717,7 @@ function DwgSlot({ files, onAddDwg, onRemove, onConverted, onDocType }) {
                   ) : (
                     <>
                       <div style={{ fontSize: 16 }}>{ {pdf:"📄", dxf:"📐", image:"🖼️"}[f.type] || "📎" }</div>
-                      <div style={{ fontSize: 7, color: "#888", fontFamily: "monospace" }}>{f.ext || f.type?.toUpperCase()}</div>
+                      <div style={{ fontSize: 7, color: "var(--dim)", fontFamily: "var(--font-mono)" }}>{f.ext || f.type?.toUpperCase()}</div>
                     </>
                   )}
                   {conv && (
@@ -726,10 +727,10 @@ function DwgSlot({ files, onAddDwg, onRemove, onConverted, onDocType }) {
                   )}
                 </div>
                 {!conv && <button onClick={() => onRemove(i)} style={{ position: "absolute", top: -5, right: -5, width: 16, height: 16, background: "#e74c3c", color: "#fff", border: "none", borderRadius: "50%", cursor: "pointer", fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>}
-                <div style={{ fontSize: 7, color: "#888", fontFamily: "monospace", textAlign: "center", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 70 }}>{f.filename}</div>
+                <div style={{ fontSize: 7, color: "var(--dim)", fontFamily: "var(--font-mono)", textAlign: "center", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 70 }}>{f.filename}</div>
                 {onDocType && !f._loading && !f._error && (
                   <select value={f._docType || ""} onChange={e => onDocType(f._id, e.target.value)} title="Тип документа для Cross-Check"
-                    style={{ width: 70, fontSize: 8, fontFamily: "monospace", border: `1px solid ${f._docType ? "#3498db" : "#ddd"}`, borderRadius: 3, padding: "1px 2px", outline: "none", color: f._docType ? "#333" : "#bbb", background: "#fff", boxSizing: "border-box", marginTop: 2 }}>
+                    style={{ width: 70, fontSize: 8, fontFamily: "monospace", border: `1px solid ${f._docType ? "#3498db" : "var(--line)"}`, borderRadius: 3, padding: "1px 2px", outline: "none", color: f._docType ? "var(--text)" : "var(--dim)", background: "var(--void)", boxSizing: "border-box", marginTop: 2 }}>
                     <option value="">тип?</option>
                     {Object.entries(DOC_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                   </select>
@@ -739,10 +740,10 @@ function DwgSlot({ files, onAddDwg, onRemove, onConverted, onDocType }) {
           })}
           <div onClick={() => inputRef.current.click()} style={{ width: 70, height: 70, border: "2px dashed #3498db", borderRadius: 8, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
             <div style={{ fontSize: 20, color: "#3498db" }}>+</div>
-            <div style={{ fontSize: 7, color: "#bbb", fontFamily: "monospace", textAlign: "center" }}>DWG/DXF<br/>PDF/зображ.</div>
+            <div style={{ fontSize: 7, color: "var(--dim)", fontFamily: "var(--font-mono)", textAlign: "center" }}>DWG/DXF<br/>PDF/зображ.</div>
           </div>
         </div>
-        {!drag && <div style={{ fontSize: 8, color: "#ccc", fontFamily: "monospace", textAlign: "center", marginTop: 4 }}>↑ або перетягніть</div>}
+        {!drag && <div style={{ fontSize: 8, color: "var(--dim)", fontFamily: "var(--font-mono)", textAlign: "center", marginTop: 4 }}>↑ або перетягніть</div>}
       </div>
 
       {/* Превью прочитаних DWG — показується відразу без API */}
@@ -1572,9 +1573,9 @@ function TzReviewStep({ cards, onRemove, onEdit, onBack, onProceed, hasRenders, 
     <div style={{ maxWidth: 900, margin: "0 auto", padding: "22px 24px", display: "flex", flexDirection: "column", gap: 12 }}>
       <div>
         <div style={{ fontSize: 10, letterSpacing: "0.14em", color: "#888", fontFamily: "monospace", marginBottom: 4 }}>КРОК 2 — ПІДТВЕРДЖЕННЯ ТЗ</div>
-        <div style={{ fontSize: 16, fontWeight: 400, letterSpacing: "0.05em", color: "#1a1a1a", marginBottom: 4 }}>Перевір пункти ТЗ</div>
-        <div style={{ fontSize: 11, color: "#888", fontFamily: "monospace" }}>
-          Claude розпізнала <strong style={{ color: "#333" }}>{cards.length}</strong> пунктів ТЗ. Редагуй або видаляй — решта стануть чеклистом для перевірки рендеру.
+        <div style={{ fontSize: 16, fontWeight: 500, letterSpacing: "0.05em", color: "var(--text)", marginBottom: 4 }}>Перевір пункти ТЗ</div>
+        <div style={{ fontSize: 11, color: "var(--dim)", fontFamily: "var(--font-mono)" }}>
+          Claude розпізнала <strong style={{ color: "var(--text)" }}>{cards.length}</strong> пунктів ТЗ. Редагуй або видаляй — решта стануть чеклистом для перевірки рендеру.
         </div>
       </div>
       {annotation && (
@@ -1836,10 +1837,11 @@ function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", n
   const ico = { pdf: "📄", dwg: "⚠️", dxf: "📐", excel: "📊", text: "📝", image: "🖼️", other: "📎" };
   return (
     <div>
-      {label && <div style={{ fontSize: 10, letterSpacing: "0.14em", color: "#888", marginBottom: note ? 2 : 5, fontFamily: "monospace" }}>{label}</div>}
-      {note && <div style={{ fontSize: 9, color: "#bbb", fontFamily: "monospace", marginBottom: 5 }}>{note}</div>}
+      {label && <div className="vp-label" style={{ marginBottom: note ? 2 : 5 }}>{label}</div>}
+      {note && <div style={{ fontSize: 9, color: "var(--dim)", fontFamily: "var(--font-mono)", marginBottom: 5 }}>{note}</div>}
       <div onDragEnter={e => { e.preventDefault(); ctr.current++; setDrag(true); }} onDragLeave={e => { e.preventDefault(); if (--ctr.current === 0) setDrag(false); }} onDragOver={e => e.preventDefault()} onDrop={onDrop}
-        style={{ border: `2px dashed ${drag ? color : "#ddd"}`, borderRadius: 10, padding: 8, background: drag ? color + "11" : "#fafafa", minHeight: 90, display: "flex", flexDirection: "column", justifyContent: files.length === 0 ? "center" : "flex-start" }}>
+        className={`vp-dropzone${drag ? " vp-dropzone--drag" : ""}`}
+        style={{ padding: 8, minHeight: 90, display: "flex", flexDirection: "column", justifyContent: files.length === 0 ? "center" : "flex-start" }}>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", justifyContent: files.length === 0 ? "center" : "flex-start" }}>
           {files.map((f, i) => {
             const prev = f.preview || f.pages?.[0]?.preview;
@@ -1847,10 +1849,10 @@ function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", n
               <div key={f._id || i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2, flexShrink: 0 }}>
             <div draggable={!f._loading && f._done} onDragStart={() => { _dragging = { file: f, remove: () => onRemove(i) }; }} onDragEnd={() => { _dragging = null; }} style={{ position: "relative", width: 70, height: 70, cursor: (!f._loading && f._done) ? "grab" : "default" }}>
                 {prev && f.type !== "excel"
-                  ? <img src={prev} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 5, border: `1px solid ${f._error ? "#e74c3c" : f._done ? color : "#ddd"}`, filter: f._loading ? "brightness(0.4)" : "none" }} />
-                  : <div style={{ width: "100%", height: "100%", borderRadius: 5, border: `1px solid ${f._error ? "#e74c3c" : f._done ? color : "#ddd"}`, background: f._error ? "#3a1a1a" : f.type === "dwg" ? "#0a1929" : f.type === "excel" ? "#0d2b0d" : "#f0eeea", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}>
+                  ? <img src={prev} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 5, border: `1px solid ${f._error ? "var(--fail)" : f._done ? color : "var(--line)"}`, filter: f._loading ? "brightness(0.4)" : "none" }} />
+                  : <div style={{ width: "100%", height: "100%", borderRadius: 5, border: `1px solid ${f._error ? "var(--fail)" : f._done ? color : "var(--line)"}`, background: f._error ? "#3a1a1a" : f.type === "dwg" ? "#0a1929" : f.type === "excel" ? "#0d2b0d" : "var(--void)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}>
                     <div style={{ fontSize: 18 }}>{f._error ? "⚠️" : ico[f.type] || ico.other}</div>
-                    <div style={{ fontSize: 7, color: f._error ? "#ff8888" : "#888", fontFamily: "monospace", textAlign: "center", padding: "0 3px", wordBreak: "break-all", lineHeight: 1.2 }}>{f._error ? "ERR" : (f.ext || f.type?.toUpperCase() || "...")}</div>
+                    <div style={{ fontSize: 7, color: f._error ? "#ff8888" : "var(--dim)", fontFamily: "var(--font-mono)", textAlign: "center", padding: "0 3px", wordBreak: "break-all", lineHeight: 1.2 }}>{f._error ? "ERR" : (f.ext || f.type?.toUpperCase() || "...")}</div>
                   </div>}
                 {f._loading && (
                   <div style={{ position: "absolute", inset: 0, borderRadius: 5, background: "rgba(0,0,0,0.7)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
@@ -1868,11 +1870,11 @@ function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", n
                 {!f._loading && <button onClick={() => onRemove(i)} style={{ position: "absolute", top: -5, right: -5, width: 16, height: 16, background: "#e74c3c", color: "#fff", border: "none", borderRadius: "50%", cursor: "pointer", fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>}
               </div>
               {onTag && f._done && !f._loading && (
-                <input value={f._tag || ""} onChange={e => onTag(f._id, e.target.value)} placeholder="пункт ТЗ" title="Прив'язати до пункту ТЗ" style={{ width: 70, fontSize: 8, fontFamily: "monospace", border: "1px solid #ddd", borderRadius: 3, padding: "2px 4px", outline: "none", color: "#555", boxSizing: "border-box", textAlign: "center" }} />
+                <input value={f._tag || ""} onChange={e => onTag(f._id, e.target.value)} placeholder="пункт ТЗ" title="Прив'язати до пункту ТЗ" style={{ width: 70, fontSize: 8, fontFamily: "var(--font-mono)", border: "1px solid var(--line)", borderRadius: 3, padding: "2px 4px", outline: "none", color: "var(--text)", background: "var(--void)", boxSizing: "border-box", textAlign: "center" }} />
               )}
               {onDocType && f._done && !f._loading && (
                 <select value={f._docType || ""} onChange={e => onDocType(f._id, e.target.value)} title="Тип документа для Cross-Check"
-                  style={{ width: 70, fontSize: 8, fontFamily: "monospace", border: `1px solid ${f._docType ? color : "#ddd"}`, borderRadius: 3, padding: "1px 2px", outline: "none", color: f._docType ? "#333" : "#bbb", background: "#fff", boxSizing: "border-box", marginTop: 2 }}>
+                  style={{ width: 70, fontSize: 8, fontFamily: "monospace", border: `1px solid ${f._docType ? color : "var(--line)"}`, borderRadius: 3, padding: "1px 2px", outline: "none", color: f._docType ? "var(--text)" : "var(--dim)", background: "var(--void)", boxSizing: "border-box", marginTop: 2 }}>
                   <option value="">тип?</option>
                   {Object.entries(DOC_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                 </select>
@@ -1882,10 +1884,10 @@ function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", n
           })}
           <div onClick={() => inputRef.current.click()} style={{ width: 70, height: 70, border: `2px dashed ${color}`, borderRadius: 8, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
             <div style={{ fontSize: 20, color }}>+</div>
-            <div style={{ fontSize: 8, color: "#bbb", fontFamily: "monospace" }}>додати</div>
+            <div style={{ fontSize: 8, color: "var(--dim)", fontFamily: "var(--font-mono)" }}>додати</div>
           </div>
         </div>
-        {!drag && <div style={{ fontSize: 8, color: "#ccc", fontFamily: "monospace", textAlign: "center", marginTop: 4 }}>↑ або перетягніть</div>}
+        {!drag && <div style={{ fontSize: 8, color: "var(--dim)", fontFamily: "var(--font-mono)", textAlign: "center", marginTop: 4 }}>↑ або перетягніть</div>}
       </div>
       <input ref={inputRef} type="file" accept="*/*" multiple style={{ display: "none" }} onChange={e => { Array.from(e.target.files).forEach(onAdd); e.target.value = ""; }} />
     </div>
@@ -2997,11 +2999,11 @@ ${fileList}
       </div>
 
       {step === 1 && savedSession && (
-        <div style={{ margin: "0 24px 12px", background: "#fff", border: "1px solid #3498db33", borderRadius: 10, padding: "10px 16px", display: "flex", alignItems: "center", gap: 12 }}>
+        <div className="vp-panel" style={{ margin: "12px 24px", padding: "10px 16px", display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ fontSize: 13 }}>💾</span>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "#333", fontFamily: "monospace" }}>{savedSession.mode === "tz-review" ? "Збережений розбір ТЗ" : "Є збережена сесія"}</div>
-            <div style={{ fontSize: 10, color: "#aaa", fontFamily: "monospace" }}>{new Date(savedSession.savedAt).toLocaleString("uk")} {savedSession.mode === "tz-review" ? `· ${savedSession.tzCards?.length || 0} пунктів` : `· ${savedSession.perData?.filter(Boolean).length || 0} ракурсів`}</div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text)", fontFamily: "var(--font-mono)" }}>{savedSession.mode === "tz-review" ? "Збережений розбір ТЗ" : "Є збережена сесія"}</div>
+            <div style={{ fontSize: 10, color: "var(--dim)", fontFamily: "var(--font-mono)" }}>{new Date(savedSession.savedAt).toLocaleString("uk")} {savedSession.mode === "tz-review" ? `· ${savedSession.tzCards?.length || 0} пунктів` : `· ${savedSession.perData?.filter(Boolean).length || 0} ракурсів`}</div>
           </div>
           <button onClick={() => {
             if (savedSession.mode === "tz-review") {
@@ -3023,7 +3025,7 @@ ${fileList}
           }} style={{ background: "#3498db", color: "#fff", border: "none", padding: "6px 14px", borderRadius: 6, fontSize: 11, fontFamily: "monospace", cursor: "pointer" }}>
             Відновити →
           </button>
-          <button onClick={() => { clearSession(); setSavedSession(null); }} style={{ background: "none", border: "1px solid #e0ddd8", color: "#aaa", padding: "6px 10px", borderRadius: 6, fontSize: 11, fontFamily: "monospace", cursor: "pointer" }}>
+          <button onClick={() => { clearSession(); setSavedSession(null); }} style={{ background: "none", border: "1px solid var(--line)", color: "var(--dim)", padding: "6px 10px", borderRadius: 6, fontSize: 11, fontFamily: "var(--font-mono)", cursor: "pointer" }}>
             ✕
           </button>
         </div>
@@ -3051,7 +3053,7 @@ ${fileList}
               { id: "first",     icon: "🎯", label: "Перший результат",   desc: "Рендер vs ТЗ, референси, специфікація" },
               { id: "revision",  icon: "🔄", label: "Порівняння раундів", desc: "ДО vs ПІСЛЯ — чи внесені правки" },
             ].map(m => (
-              <div key={m.id} onClick={() => { setMode(m.id); setErr(""); }} style={{ background: mode === m.id ? "#1a1a1a" : "#fff", color: mode === m.id ? "#f2f0ec" : "#444", border: `2px solid ${mode === m.id ? "#1a1a1a" : "#e0ddd8"}`, borderRadius: 10, padding: "14px 16px", cursor: "pointer", transition: "all 0.15s" }}>
+              <div key={m.id} onClick={() => { setMode(m.id); setErr(""); }} style={{ background: mode === m.id ? "#20242c" : "var(--panel)", color: mode === m.id ? "var(--text)" : "var(--dim)", border: `1.5px solid ${mode === m.id ? "var(--amber)" : "var(--line)"}`, borderRadius: 10, padding: "14px 16px", cursor: "pointer", transition: "all 0.15s" }}>
                 <div style={{ fontSize: 20, marginBottom: 4 }}>{m.icon}</div>
                 <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{m.label}</div>
                 <div style={{ fontSize: 10, opacity: 0.5, fontFamily: "monospace" }}>{m.desc}</div>
@@ -3059,17 +3061,17 @@ ${fileList}
             ))}
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-            {QA_CHECKS.map(q => <div key={q.id} style={{ display: "flex", alignItems: "center", gap: 4, background: "#fff", border: `1px solid ${q.color}33`, borderLeft: `3px solid ${q.color}`, borderRadius: "0 5px 5px 0", padding: "3px 8px" }}><span style={{ fontSize: 9, fontWeight: "bold", color: q.color, fontFamily: "monospace" }}>#{q.id}</span><span style={{ fontSize: 10, color: "#555", fontFamily: "monospace" }}>{q.label}</span></div>)}
+            {QA_CHECKS.map(q => <div key={q.id} style={{ display: "flex", alignItems: "center", gap: 4, background: "var(--panel)", border: `1px solid ${q.color}33`, borderLeft: `3px solid ${q.color}`, borderRadius: "0 5px 5px 0", padding: "3px 8px" }}><span style={{ fontSize: 9, fontWeight: "bold", color: q.color, fontFamily: "var(--font-mono)" }}>#{q.id}</span><span style={{ fontSize: 10, color: "var(--dim)", fontFamily: "var(--font-mono)" }}>{q.label}</span></div>)}
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {Object.entries(STANDARDS).map(([k, v]) => <div key={k} style={{ flex: 1, minWidth: 140, background: v.bg, border: `1px solid ${v.color}44`, borderLeft: `4px solid ${v.color}`, borderRadius: "0 8px 8px 0", padding: "7px 11px" }}><div style={{ fontSize: 13, fontWeight: 700, color: v.color, fontFamily: "monospace", marginBottom: 2 }}>{k}</div><div style={{ fontSize: 10, color: "#666", fontFamily: "monospace" }}>{v.desc}</div></div>)}
+            {Object.entries(STANDARDS).map(([k, v]) => <div key={k} style={{ flex: 1, minWidth: 140, background: "var(--panel)", border: `1px solid ${v.color}44`, borderLeft: `4px solid ${v.color}`, borderRadius: "0 8px 8px 0", padding: "7px 11px" }}><div style={{ fontSize: 13, fontWeight: 700, color: v.color, fontFamily: "var(--font-mono)", marginBottom: 2 }}>{k}</div><div style={{ fontSize: 10, color: "var(--dim)", fontFamily: "var(--font-mono)" }}>{v.desc}</div></div>)}
           </div>
-          <div style={{ height: 1, background: "#ddd" }} />
+          <div style={{ height: 1, background: "var(--line)" }} />
           {mode === "tz-review" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <div>
-                <div style={{ fontSize: 10, letterSpacing: "0.14em", color: "#888", marginBottom: 5, fontFamily: "monospace" }}>ТЗ — ТЕКСТ</div>
-                <textarea value={briefText} onChange={e => setBriefText(e.target.value)} placeholder={"• Інтер'єр вітальні у скандинавському стилі\n• Або залиште порожнім — ТЗ у файлах нижче"} style={{ width: "100%", minHeight: 80, padding: "10px 12px", border: "1px solid #ddd", borderRadius: 8, background: "#fff", fontSize: 13, lineHeight: 1.7, fontFamily: "monospace", resize: "vertical", color: "#333", outline: "none", boxSizing: "border-box" }} />
+                <div className="vp-label" style={{ marginBottom: 5 }}>ТЗ — ТЕКСТ</div>
+                <textarea value={briefText} onChange={e => setBriefText(e.target.value)} placeholder={"• Інтер'єр вітальні у скандинавському стилі\n• Або залиште порожнім — ТЗ у файлах нижче"} style={{ width: "100%", minHeight: 80, padding: "10px 12px", border: "1px solid var(--line)", borderRadius: 8, background: "var(--panel)", fontSize: 13, lineHeight: 1.7, fontFamily: "var(--font-mono)", resize: "vertical", color: "var(--text)", outline: "none", boxSizing: "border-box" }} />
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
                 <UploadBox label="БРИФИ" note="PDF, зобр., Excel/CSV" files={briefs.files} onAdd={briefs.add} onAddDone={briefs.addDone} onRemove={briefs.remove} onDocType={briefs.updateDocType} color="#e74c3c" />
@@ -3087,11 +3089,11 @@ ${fileList}
           )}
           {mode === "first" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              <div style={{ background: "#0d1a2b", border: "1px solid #2980b944", borderRadius: 10, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
-                <div style={{ fontSize: 10, letterSpacing: "0.14em", color: "#2980b9", fontFamily: "monospace", marginBottom: 4 }}>ARCHIVIZER</div>
+              <div className="vp-panel" style={{ borderRadius: 10, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
+                <div className="vp-label" style={{ color: "var(--info)", marginBottom: 4 }}>ARCHIVIZER</div>
                 {!archivizerToken.trim() && <div style={{ fontSize: 10, color: "var(--warn)", fontFamily: "var(--font-mono)" }}>токен не заданий — додай у ⚙ справа вгорі</div>}
                 <div style={{ display: "flex", gap: 8 }}>
-                  <input type="text" value={archivizerUrl} onChange={e => setArchivizerUrl(e.target.value)} onKeyDown={e => e.key === "Enter" && loadFromArchivizer()} placeholder="https://archivizer.com/tasks/WF8PSTKA" style={{ flex: 1, background: "#111", border: "1px solid #333", color: "#aaa", padding: "6px 10px", fontSize: 11, fontFamily: "monospace", borderRadius: 4, outline: "none" }} />
+                  <input type="text" value={archivizerUrl} onChange={e => setArchivizerUrl(e.target.value)} onKeyDown={e => e.key === "Enter" && loadFromArchivizer()} placeholder="https://archivizer.com/tasks/WF8PSTKA" className="vp-input" style={{ flex: 1 }} />
                   <button onClick={loadFromArchivizer} disabled={archivizerStatus?.loading} style={{ background: archivizerStatus?.loading ? "#333" : "#2980b9", border: "none", color: "#fff", borderRadius: 4, padding: "6px 16px", cursor: archivizerStatus?.loading ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "monospace", whiteSpace: "nowrap" }}>
                     {archivizerStatus?.loading ? "Завантаження..." : "Завантажити"}
                   </button>
@@ -3100,8 +3102,8 @@ ${fileList}
               </div>
               <UploadBox label="РЕНДЕРИ" files={renders.files} onAdd={renders.add} onAddDone={renders.addDone} onRemove={renders.remove} color="#1a1a1a" />
               <div>
-                <div style={{ fontSize: 10, letterSpacing: "0.14em", color: "#888", marginBottom: 5, fontFamily: "monospace" }}>ТЗ — ТЕКСТ</div>
-                <textarea value={briefText} onChange={e => setBriefText(e.target.value)} placeholder={"• Інтер'єр вітальні у скандинавському стилі\n• Або залиште порожнім — ТЗ у файлах нижче"} style={{ width: "100%", minHeight: 80, padding: "10px 12px", border: "1px solid #ddd", borderRadius: 8, background: "#fff", fontSize: 13, lineHeight: 1.7, fontFamily: "monospace", resize: "vertical", color: "#333", outline: "none", boxSizing: "border-box" }} />
+                <div className="vp-label" style={{ marginBottom: 5 }}>ТЗ — ТЕКСТ</div>
+                <textarea value={briefText} onChange={e => setBriefText(e.target.value)} placeholder={"• Інтер'єр вітальні у скандинавському стилі\n• Або залиште порожнім — ТЗ у файлах нижче"} style={{ width: "100%", minHeight: 80, padding: "10px 12px", border: "1px solid var(--line)", borderRadius: 8, background: "var(--panel)", fontSize: 13, lineHeight: 1.7, fontFamily: "var(--font-mono)", resize: "vertical", color: "var(--text)", outline: "none", boxSizing: "border-box" }} />
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
                 <UploadBox label="БРИФИ" note="PDF, зобр., Excel/CSV" files={briefs.files} onAdd={briefs.add} onAddDone={briefs.addDone} onRemove={briefs.remove} onDocType={briefs.updateDocType} color="#e74c3c" />
@@ -3115,7 +3117,7 @@ ${fileList}
                 />
               </div>
               {slotsJsx}
-              <div style={{ background: "#f0faf4", border: "1px solid #27ae6033", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "#555", fontFamily: "monospace" }}>
+              <div style={{ background: "#16211a", border: "1px solid #2c4634", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "var(--dim)", fontFamily: "var(--font-mono)" }}>
                 💡 Excel/CSV з переліком матеріалів — Claude перевірить відповідність кожного на рендері
               </div>
             </div>
@@ -3123,20 +3125,20 @@ ${fileList}
           {isRev && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               {pairs.map((pair, pi) => (
-                <div key={pair.id} style={{ background: "#fff", border: "1px solid #e8e6e1", borderRadius: 12, padding: 14 }}>
+                <div key={pair.id} className="vp-panel" style={{ borderRadius: 12, padding: 14 }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-                    <div style={{ fontSize: 11, fontFamily: "monospace", fontWeight: 600, color: "#555" }}>РАУНД {pi + 1}</div>
-                    {pairs.length > 1 && <button onClick={() => setPairs(p => p.filter((_, j) => j !== pi))} style={{ background: "none", border: "1px solid #ddd", color: "#bbb", borderRadius: 5, cursor: "pointer", fontSize: 10, padding: "2px 8px", fontFamily: "monospace" }}>видалити</button>}
+                    <div style={{ fontSize: 11, fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--text)" }}>РАУНД {pi + 1}</div>
+                    {pairs.length > 1 && <button onClick={() => setPairs(p => p.filter((_, j) => j !== pi))} style={{ background: "none", border: "1px solid var(--line)", color: "var(--dim)", borderRadius: 5, cursor: "pointer", fontSize: 10, padding: "2px 8px", fontFamily: "var(--font-mono)" }}>видалити</button>}
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
                     <UploadBox label="ДО" files={getPF(pair.id, "before")} onAdd={f => addPF(pair.id, "before", f)} onRemove={i => removePF(pair.id, "before", i)} color="#888" onAddDone={f => { const id = "f"+Date.now()+"_"+Math.random().toString(36).slice(2); pairBefores.current[pair.id]=[...(pairBefores.current[pair.id]||[]),{...f,_id:id}]; bumpPairs(); }} />
                     <UploadBox label="ПІСЛЯ" files={getPF(pair.id, "after")} onAdd={f => addPF(pair.id, "after", f)} onRemove={i => removePF(pair.id, "after", i)} color="#27ae60" onAddDone={f => { const id = "f"+Date.now()+"_"+Math.random().toString(36).slice(2); pairAfters.current[pair.id]=[...(pairAfters.current[pair.id]||[]),{...f,_id:id}]; bumpPairs(); }} />
                   </div>
-                  <textarea value={pair.comment} onChange={e => setPairs(p => p.map((x, j) => j === pi ? { ...x, comment: e.target.value } : x))} placeholder="• Правки до цього раунду (опціонально)" style={{ width: "100%", minHeight: 65, padding: "9px 11px", border: "1px solid #ddd", borderRadius: 8, background: "#fafafa", fontSize: 13, lineHeight: 1.7, fontFamily: "monospace", resize: "vertical", color: "#333", outline: "none", boxSizing: "border-box" }} />
+                  <textarea value={pair.comment} onChange={e => setPairs(p => p.map((x, j) => j === pi ? { ...x, comment: e.target.value } : x))} placeholder="• Правки до цього раунду (опціонально)" style={{ width: "100%", minHeight: 65, padding: "9px 11px", border: "1px solid var(--line)", borderRadius: 8, background: "var(--void)", fontSize: 13, lineHeight: 1.7, fontFamily: "var(--font-mono)", resize: "vertical", color: "var(--text)", outline: "none", boxSizing: "border-box" }} />
                 </div>
               ))}
-              <button onClick={() => setPairs(p => [...p, { id: Date.now(), comment: "" }])} style={{ background: "transparent", border: "2px dashed #ddd", color: "#aaa", padding: "11px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 10 }}>+ додати раунд</button>
-              <div style={{ height: 1, background: "#ddd" }} />
+              <button onClick={() => setPairs(p => [...p, { id: Date.now(), comment: "" }])} style={{ background: "transparent", border: "1.5px dashed var(--line)", color: "var(--dim)", padding: "11px", cursor: "pointer", fontSize: 11, fontFamily: "var(--font-mono)", borderRadius: 10 }}>+ додати раунд</button>
+              <div style={{ height: 1, background: "var(--line)" }} />
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
                 <UploadBox label="БРИФИ" note="PDF, Excel/CSV" files={revBriefs.files} onAdd={revBriefs.add} onAddDone={revBriefs.addDone} onRemove={revBriefs.remove} onDocType={revBriefs.updateDocType} color="#e74c3c" />
                 <UploadBox label="РЕФЕРЕНСИ" files={revRefs.files} onAdd={revRefs.add} onAddDone={revRefs.addDone} onRemove={revRefs.remove} onDocType={revRefs.updateDocType} color="#e67e22" />
@@ -3150,23 +3152,23 @@ ${fileList}
               </div>
             </div>
           )}
-          {err && <div style={{ color: "#e74c3c", fontSize: 12, fontFamily: "monospace", padding: "10px 13px", background: "#fff5f5", borderRadius: 6, border: "1px solid #fcc" }}>{err}</div>}
+          {err && <div style={{ color: "var(--fail)", fontSize: 12, fontFamily: "var(--font-mono)", padding: "10px 13px", background: "#2a1215", borderRadius: 6, border: "1px solid var(--fail)" }}>{err}</div>}
           {mode === "revision"
-            ? <button onClick={runAnalysis} style={{ background: "#1a1a1a", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: "pointer", borderRadius: 8 }}>ПОРІВНЯТИ РАУНДИ →</button>
+            ? <button onClick={runAnalysis} style={{ background: "var(--amber)", color: "#131519", border: "none", padding: "14px", fontSize: 12, fontWeight: 600, letterSpacing: "0.14em", fontFamily: "var(--font-mono)", cursor: "pointer", borderRadius: 8 }}>ПОРІВНЯТИ РАУНДИ →</button>
             : mode === "tz-review"
-              ? <button onClick={parseTzCards} disabled={tzParsing} style={{ background: tzParsing ? "#444" : "#1a1a1a", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: tzParsing ? "not-allowed" : "pointer", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%" }}>
+              ? <button onClick={parseTzCards} disabled={tzParsing} style={{ background: tzParsing ? "var(--line)" : "var(--amber)", color: tzParsing ? "var(--dim)" : "#131519", border: "none", padding: "14px", fontSize: 12, fontWeight: 600, letterSpacing: "0.14em", fontFamily: "var(--font-mono)", cursor: tzParsing ? "not-allowed" : "pointer", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%" }}>
                   {tzParsing ? <><div style={{ width: 12, height: 12, border: "1.5px solid #aaa", borderTop: "1.5px solid #fff", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />РОЗБИРАЮ ТЗ…</> : "РОЗІБРАТИ ТЗ →"}
                 </button>
               : tzCards.length > 0
                 ? <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    <div style={{ background: "#f0faf4", border: "1px solid #27ae6033", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "#27ae60", fontFamily: "monospace", display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ background: "#16211a", border: "1px solid #2c4634", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "var(--ok)", fontFamily: "var(--font-mono)", display: "flex", alignItems: "center", gap: 8 }}>
                       ✓ ТЗ розібрано — {tzCards.length} пунктів. <button onClick={() => { setTzCards([]); setTzAnnotation(""); setTzClientComments([]); }} style={{ background: "none", border: "none", color: "#aaa", fontSize: 10, fontFamily: "monospace", cursor: "pointer", padding: 0, marginLeft: "auto" }}>скинути</button>
                     </div>
-                    <button onClick={() => setTzReview(true)} style={{ background: "#1a1a1a", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: "pointer", borderRadius: 8, width: "100%" }}>
+                    <button onClick={() => setTzReview(true)} style={{ background: "var(--amber)", color: "#131519", border: "none", padding: "14px", fontSize: 12, fontWeight: 600, letterSpacing: "0.14em", fontFamily: "var(--font-mono)", cursor: "pointer", borderRadius: 8, width: "100%" }}>
                       ПЕРЕЙТИ ДО ПЕРЕВІРКИ ({tzCards.length} пунктів ТЗ) →
                     </button>
                   </div>
-                : <button onClick={parseTzCards} disabled={tzParsing} style={{ background: tzParsing ? "#444" : "#1a1a1a", color: "#f2f0ec", border: "none", padding: "14px", fontSize: 12, letterSpacing: "0.14em", fontFamily: "monospace", cursor: tzParsing ? "not-allowed" : "pointer", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%" }}>
+                : <button onClick={parseTzCards} disabled={tzParsing} style={{ background: tzParsing ? "var(--line)" : "var(--amber)", color: tzParsing ? "var(--dim)" : "#131519", border: "none", padding: "14px", fontSize: 12, fontWeight: 600, letterSpacing: "0.14em", fontFamily: "var(--font-mono)", cursor: tzParsing ? "not-allowed" : "pointer", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%" }}>
                     {tzParsing ? <><div style={{ width: 12, height: 12, border: "1.5px solid #aaa", borderTop: "1.5px solid #fff", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />РОЗБИРАЮ ТЗ…</> : "РОЗІБРАТИ ТЗ →"}
                   </button>
           }
