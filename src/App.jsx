@@ -730,7 +730,7 @@ function DwgSlot({ files, onAddDwg, onRemove, onConverted, onDocType }) {
                 <div style={{ fontSize: 7, color: "var(--dim)", fontFamily: "var(--font-mono)", textAlign: "center", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 70 }}>{f.filename}</div>
                 {onDocType && !f._loading && !f._error && (
                   <select value={f._docType || ""} onChange={e => onDocType(f._id, e.target.value)} title="Тип документа для Cross-Check"
-                    style={{ width: 70, fontSize: 8, fontFamily: "monospace", border: `1px solid ${f._docType ? "#3498db" : "var(--line)"}`, borderRadius: 3, padding: "1px 2px", outline: "none", color: f._docType ? "var(--text)" : "var(--dim)", background: "var(--void)", boxSizing: "border-box", marginTop: 2 }}>
+                    style={{ width: 70, fontSize: 8, fontFamily: "monospace", border: `1px solid ${f._docType ? "rgba(139,92,246,.45)" : "var(--line)"}`, borderRadius: 4, padding: "1px 2px", outline: "none", color: f._docType ? "#C4B5FD" : "var(--dim2)", background: f._docType ? "rgba(139,92,246,.14)" : "var(--void)", boxSizing: "border-box", marginTop: 2 }}>
                     <option value="">тип?</option>
                     {Object.entries(DOC_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                   </select>
@@ -1780,6 +1780,13 @@ function Grid({ items, perData, statuses, globalSummary, onSelect, onRetry, mode
   );
 }
 
+// ─── Mode icons (лінійні, в тон системи) ─────────────────────────────────────
+const MODE_ICONS = {
+  "tz-review": <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M8 3h8l4 4v14H4V3h4z"/><path d="M9 12h6M9 16h6M9 8h2"/></svg>,
+  first: <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.6"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1" fill="currentColor"/></svg>,
+  revision: <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M4 8h13l-3-3M20 16H7l3 3"/></svg>,
+};
+
 // ─── Custom typed slot ────────────────────────────────────────────────────────
 function CustomSlot({ type, files, onAdd, onRemoveFile, onRemoveSlot }) {
   const inputRef = useRef(); const [drag, setDrag] = useState(false); const ctr = useRef(0);
@@ -1787,7 +1794,7 @@ function CustomSlot({ type, files, onAdd, onRemoveFile, onRemoveSlot }) {
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
-        <span className="vp-label" style={{ color: "var(--amber)" }}>{DOC_TYPES[type]}</span>
+        <span className="vp-label" style={{ color: "#A78BFA" }}>{DOC_TYPES[type]}</span>
         <span className="vp-chip">слот</span>
         <span style={{ flex: 1 }} />
         <button onClick={() => files.length === 0 && onRemoveSlot(type)} title={files.length ? "Спочатку прибери файли" : "Прибрати слот"}
@@ -1822,7 +1829,7 @@ function CustomSlot({ type, files, onAdd, onRemoveFile, onRemoveSlot }) {
 }
 
 // ─── Upload box ───────────────────────────────────────────────────────────────
-function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", note, onTag, onDocType }) {
+function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", note, onTag, onDocType, hero }) {
   const inputRef = useRef(); const [drag, setDrag] = useState(false); const ctr = useRef(0);
   const onDrop = e => {
     e.preventDefault(); setDrag(false); ctr.current = 0;
@@ -1837,12 +1844,24 @@ function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", n
   const ico = { pdf: "📄", dwg: "⚠️", dxf: "📐", excel: "📊", text: "📝", image: "🖼️", other: "📎" };
   return (
     <div>
-      {label && <div className="vp-label" style={{ marginBottom: note ? 2 : 5 }}>{label}</div>}
+      {label && <div style={{ display: "flex", alignItems: "center", marginBottom: note ? 2 : 5 }}><span className="vp-label">{label}</span><span className="vp-chip" style={{ marginLeft: "auto" }}>{files.length}</span></div>}
       {note && <div style={{ fontSize: 9, color: "var(--dim)", fontFamily: "var(--font-mono)", marginBottom: 5 }}>{note}</div>}
       <div onDragEnter={e => { e.preventDefault(); ctr.current++; setDrag(true); }} onDragLeave={e => { e.preventDefault(); if (--ctr.current === 0) setDrag(false); }} onDragOver={e => e.preventDefault()} onDrop={onDrop}
-        className={`vp-dropzone${drag ? " vp-dropzone--drag" : ""}`}
-        style={{ padding: 8, minHeight: 90, display: "flex", flexDirection: "column", justifyContent: files.length === 0 ? "center" : "flex-start" }}>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", justifyContent: files.length === 0 ? "center" : "flex-start" }}>
+        className={`vp-dropzone${hero ? " vp-hero" : ""}${drag ? " vp-dropzone--drag" : ""}`}
+        style={{ padding: hero ? undefined : 8, minHeight: hero ? undefined : 90, display: hero && files.length === 0 ? "block" : "flex", flexDirection: "column", justifyContent: files.length === 0 ? "center" : "flex-start" }}>
+        {hero && files.length === 0 ? (
+          <div onClick={() => inputRef.current.click()} style={{ position: "relative" }}>
+            <div className="vp-ghosts">
+              <div className="vp-ghost"><span className="vp-sun" /></div>
+              <div className="vp-ghost vp-ghost--mid"><span className="vp-sun" /></div>
+              <div className="vp-ghost"><span className="vp-sun" /></div>
+            </div>
+            <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: "-0.01em" }}>Скинь сюди рендери</div>
+            <div style={{ fontSize: 12, color: "var(--dim2)", marginTop: 5 }}>JPG · PNG · PDF — або натисни, щоб обрати файли</div>
+          </div>
+        ) : (
+        <>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", justifyContent: files.length === 0 ? "center" : "flex-start", position: "relative", zIndex: 1 }}>
           {files.map((f, i) => {
             const prev = f.preview || f.pages?.[0]?.preview;
             return (
@@ -1874,7 +1893,7 @@ function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", n
               )}
               {onDocType && f._done && !f._loading && (
                 <select value={f._docType || ""} onChange={e => onDocType(f._id, e.target.value)} title="Тип документа для Cross-Check"
-                  style={{ width: 70, fontSize: 8, fontFamily: "monospace", border: `1px solid ${f._docType ? color : "var(--line)"}`, borderRadius: 3, padding: "1px 2px", outline: "none", color: f._docType ? "var(--text)" : "var(--dim)", background: "var(--void)", boxSizing: "border-box", marginTop: 2 }}>
+                  style={{ width: 70, fontSize: 8, fontFamily: "monospace", border: `1px solid ${f._docType ? "rgba(139,92,246,.45)" : "var(--line)"}`, borderRadius: 4, padding: "1px 2px", outline: "none", color: f._docType ? "#C4B5FD" : "var(--dim2)", background: f._docType ? "rgba(139,92,246,.14)" : "var(--void)", boxSizing: "border-box", marginTop: 2 }}>
                   <option value="">тип?</option>
                   {Object.entries(DOC_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                 </select>
@@ -1887,7 +1906,9 @@ function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", n
             <div style={{ fontSize: 8, color: "var(--dim)", fontFamily: "var(--font-mono)" }}>додати</div>
           </div>
         </div>
-        {!drag && <div style={{ fontSize: 8, color: "var(--dim)", fontFamily: "var(--font-mono)", textAlign: "center", marginTop: 4 }}>↑ або перетягніть</div>}
+        {!drag && !hero && <div style={{ fontSize: 8, color: "var(--dim)", fontFamily: "var(--font-mono)", textAlign: "center", marginTop: 4 }}>↑ або перетягніть</div>}
+        </>
+        )}
       </div>
       <input ref={inputRef} type="file" accept="*/*" multiple style={{ display: "none" }} onChange={e => { Array.from(e.target.files).forEach(onAdd); e.target.value = ""; }} />
     </div>
@@ -2956,7 +2977,7 @@ ${fileList}
         </div>
       )}
       <div style={{ position: "relative", alignSelf: "flex-start" }}>
-        <button className="vp-btn" onClick={() => setSlotMenuOpen(o => !o)}>+ слот під тип документа</button>
+        <button className="vp-pill vp-pill--ghost" onClick={() => setSlotMenuOpen(o => !o)} style={{ background: "transparent" }}>+ слот під тип документа</button>
         {slotMenuOpen && (
           <div className="vp-panel" style={{ position: "absolute", top: "110%", left: 0, zIndex: 50, padding: 6, display: "flex", flexDirection: "column", gap: 2, minWidth: 170 }}>
             {Object.entries(DOC_TYPES).filter(([k]) => !customSlots.includes(k)).map(([k, v]) => (
@@ -2972,14 +2993,28 @@ ${fileList}
     ? [...revBriefs.files, ...revRefs.files, ...revDraws.files]
     : [...briefs.files, ...refs.files, ...draws.files, ...customFiles.files];
   const sverkaChecksUi = activeSverka(allDocFiles.map(f => f._docType), mode);
+  const sverkaActiveCount = sverkaChecksUi.filter(c => c.active).length;
+  const pkgCount = renders.files.length + allDocFiles.length;
+  const ccStrip = (
+    <div className="vp-panel" style={{ padding: "14px 16px" }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 11 }}>
+        <span className="vp-label">CROSS-CHECK</span>
+        <span style={{ fontSize: 12, color: "var(--dim2)" }}>цей пакет активує <b className="vp-grad" style={{ fontWeight: 700 }}>{sverkaActiveCount} з {sverkaChecksUi.length}</b> перевірок</span>
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {sverkaChecksUi.map(c => <span key={c.id} className={`vp-cci${c.active ? " vp-cci--live" : ""}`}>{c.id} {c.label}</span>)}
+      </div>
+    </div>
+  );
   const detailProps = sel !== null && sel < gridItems.length ? getDP(sel) : null;
 
   return (
-    <div className="qa-bg" style={{ minHeight: "100vh", fontFamily: "var(--font-ui)" }}>
-      <div style={{ background: "var(--panel)", borderBottom: "1px solid var(--line)", color: "var(--text)", padding: "10px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 100 }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-          <span className="vp-label" style={{ color: "var(--amber)" }}>RENDER QA</span>
-          <span style={{ fontSize: 15, fontWeight: 500, letterSpacing: "0.02em" }}>Перевірка рендерів</span>
+    <div className="qa-bg" style={{ minHeight: "100vh", fontFamily: "var(--font-ui)", paddingBottom: 40 }}>
+      <div style={{ background: "rgba(9,9,11,.75)", backdropFilter: "blur(14px)", borderBottom: "1px solid var(--line)", color: "var(--text)", padding: "10px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 100 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span className="vp-label vp-grad" style={{ fontWeight: 600 }}>RENDER QA</span>
+          <span style={{ width: 3, height: 3, borderRadius: "50%", background: "var(--line2)" }} />
+          <span style={{ fontSize: 13, color: "var(--dim)" }}>Перевірка рендерів</span>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", position: "relative" }}>
           {step === 2 && sel !== null && <button className="vp-btn" onClick={() => setSel(null)}>← {isRev ? "Раунди" : "Ракурси"}</button>}
@@ -3047,16 +3082,23 @@ ${fileList}
       )}
       {step === 1 && !tzReview && (
         <div style={{ maxWidth: "100%", width: "100%", padding: "22px 24px", display: "flex", flexDirection: "column", gap: 16, boxSizing: "border-box" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+          <div>
+            <div className="vp-label" style={{ marginBottom: 8 }}><b style={{ color: "var(--dim)", fontWeight: 500 }}>01 ПАКЕТ</b> → 02 ПІДТВЕРДЖЕННЯ ТЗ → 03 РЕЗУЛЬТАТ</div>
+            <div style={{ fontSize: 27, fontWeight: 700, letterSpacing: "-0.025em" }}>Перевір рендер <span className="vp-grad">до здачі клієнту</span></div>
+            <div style={{ color: "var(--dim2)", fontSize: 13.5, marginTop: 7, maxWidth: 580, lineHeight: 1.6 }}>Завантаж пакет — бриф, креслення, референси — і фінальні рендери. Claude звірить кожен пункт ТЗ і збере чеклист Cross-Check.</div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
             {[
               { id: "tz-review", icon: "📋", label: "Розбір ТЗ",          desc: "Структурувати ТЗ у чекліст" },
               { id: "first",     icon: "🎯", label: "Перший результат",   desc: "Рендер vs ТЗ, референси, специфікація" },
               { id: "revision",  icon: "🔄", label: "Порівняння раундів", desc: "ДО vs ПІСЛЯ — чи внесені правки" },
             ].map(m => (
-              <div key={m.id} onClick={() => { setMode(m.id); setErr(""); }} style={{ background: mode === m.id ? "#20242c" : "var(--panel)", color: mode === m.id ? "var(--text)" : "var(--dim)", border: `1.5px solid ${mode === m.id ? "var(--amber)" : "var(--line)"}`, borderRadius: 10, padding: "14px 16px", cursor: "pointer", transition: "all 0.15s" }}>
-                <div style={{ fontSize: 20, marginBottom: 4 }}>{m.icon}</div>
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{m.label}</div>
-                <div style={{ fontSize: 10, opacity: 0.5, fontFamily: "monospace" }}>{m.desc}</div>
+              <div key={m.id} onClick={() => { setMode(m.id); setErr(""); }} className={`vp-mode${mode === m.id ? " vp-mode--on" : ""}`} style={{ padding: "15px 17px", display: "flex", gap: 13, alignItems: "flex-start", color: mode === m.id ? "var(--text)" : "var(--dim)" }}>
+                <span style={{ color: mode === m.id ? "#A78BFA" : "var(--dim2)", flexShrink: 0, marginTop: 2 }}>{MODE_ICONS[m.id]}</span>
+                <span>
+                  <span style={{ display: "block", fontSize: 13.5, fontWeight: 600 }}>{m.label}</span>
+                  <span style={{ display: "block", fontSize: 11.5, color: "var(--dim2)", marginTop: 3, lineHeight: 1.45 }}>{m.desc}</span>
+                </span>
               </div>
             ))}
           </div>
@@ -3100,7 +3142,7 @@ ${fileList}
                 </div>
                 {archivizerStatus && <div style={{ fontSize: 10, fontFamily: "monospace", color: archivizerStatus.error ? "#e74c3c" : archivizerStatus.ok ? "#27ae60" : "#aaa" }}>{archivizerStatus.error || archivizerStatus.ok || archivizerStatus.msg}</div>}
               </div>
-              <UploadBox label="РЕНДЕРИ" files={renders.files} onAdd={renders.add} onAddDone={renders.addDone} onRemove={renders.remove} color="#1a1a1a" />
+              <UploadBox label="РЕНДЕРИ" hero files={renders.files} onAdd={renders.add} onAddDone={renders.addDone} onRemove={renders.remove} color="#A78BFA" />
               <div>
                 <div className="vp-label" style={{ marginBottom: 5 }}>ТЗ — ТЕКСТ</div>
                 <textarea value={briefText} onChange={e => setBriefText(e.target.value)} placeholder={"• Інтер'єр вітальні у скандинавському стилі\n• Або залиште порожнім — ТЗ у файлах нижче"} style={{ width: "100%", minHeight: 80, padding: "10px 12px", border: "1px solid var(--line)", borderRadius: 8, background: "var(--panel)", fontSize: 13, lineHeight: 1.7, fontFamily: "var(--font-mono)", resize: "vertical", color: "var(--text)", outline: "none", boxSizing: "border-box" }} />
@@ -3152,11 +3194,12 @@ ${fileList}
               </div>
             </div>
           )}
+          {mode !== "revision" && ccStrip}
           {err && <div style={{ color: "var(--fail)", fontSize: 12, fontFamily: "var(--font-mono)", padding: "10px 13px", background: "#2a1215", borderRadius: 6, border: "1px solid var(--fail)" }}>{err}</div>}
           {mode === "revision"
-            ? <button onClick={runAnalysis} style={{ background: "var(--amber)", color: "#131519", border: "none", padding: "14px", fontSize: 12, fontWeight: 600, letterSpacing: "0.14em", fontFamily: "var(--font-mono)", cursor: "pointer", borderRadius: 8 }}>ПОРІВНЯТИ РАУНДИ →</button>
+            ? <button onClick={runAnalysis} className="vp-btn--primary" style={{ padding: "16px", fontSize: 13, borderRadius: 12, cursor: "pointer" }}>ПОРІВНЯТИ РАУНДИ →</button>
             : mode === "tz-review"
-              ? <button onClick={parseTzCards} disabled={tzParsing} style={{ background: tzParsing ? "var(--line)" : "var(--amber)", color: tzParsing ? "var(--dim)" : "#131519", border: "none", padding: "14px", fontSize: 12, fontWeight: 600, letterSpacing: "0.14em", fontFamily: "var(--font-mono)", cursor: tzParsing ? "not-allowed" : "pointer", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%" }}>
+              ? <button onClick={parseTzCards} disabled={tzParsing} className="vp-btn--primary" style={{ padding: "16px", fontSize: 13, borderRadius: 12, cursor: tzParsing ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%" }}>
                   {tzParsing ? <><div style={{ width: 12, height: 12, border: "1.5px solid #aaa", borderTop: "1.5px solid #fff", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />РОЗБИРАЮ ТЗ…</> : "РОЗІБРАТИ ТЗ →"}
                 </button>
               : tzCards.length > 0
@@ -3164,11 +3207,11 @@ ${fileList}
                     <div style={{ background: "#16211a", border: "1px solid #2c4634", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "var(--ok)", fontFamily: "var(--font-mono)", display: "flex", alignItems: "center", gap: 8 }}>
                       ✓ ТЗ розібрано — {tzCards.length} пунктів. <button onClick={() => { setTzCards([]); setTzAnnotation(""); setTzClientComments([]); }} style={{ background: "none", border: "none", color: "#aaa", fontSize: 10, fontFamily: "monospace", cursor: "pointer", padding: 0, marginLeft: "auto" }}>скинути</button>
                     </div>
-                    <button onClick={() => setTzReview(true)} style={{ background: "var(--amber)", color: "#131519", border: "none", padding: "14px", fontSize: 12, fontWeight: 600, letterSpacing: "0.14em", fontFamily: "var(--font-mono)", cursor: "pointer", borderRadius: 8, width: "100%" }}>
+                    <button onClick={() => setTzReview(true)} className="vp-btn--primary" style={{ padding: "16px", fontSize: 13, borderRadius: 12, cursor: "pointer", width: "100%" }}>
                       ПЕРЕЙТИ ДО ПЕРЕВІРКИ ({tzCards.length} пунктів ТЗ) →
                     </button>
                   </div>
-                : <button onClick={parseTzCards} disabled={tzParsing} style={{ background: tzParsing ? "var(--line)" : "var(--amber)", color: tzParsing ? "var(--dim)" : "#131519", border: "none", padding: "14px", fontSize: 12, fontWeight: 600, letterSpacing: "0.14em", fontFamily: "var(--font-mono)", cursor: tzParsing ? "not-allowed" : "pointer", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%" }}>
+                : <button onClick={parseTzCards} disabled={tzParsing} className="vp-btn--primary" style={{ padding: "16px", fontSize: 13, borderRadius: 12, cursor: tzParsing ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%" }}>
                     {tzParsing ? <><div style={{ width: 12, height: 12, border: "1.5px solid #aaa", borderTop: "1.5px solid #fff", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />РОЗБИРАЮ ТЗ…</> : "РОЗІБРАТИ ТЗ →"}
                   </button>
           }
@@ -3301,6 +3344,12 @@ ${JSON_SCHEMA}` }];
         />
       )}
 
+      <div className="vp-statusbar">
+        <span>ПАКЕТ: <b style={{ color: "var(--dim)", fontWeight: 500 }}>{pkgCount} файлів</b></span>
+        <span className="vp-grad">CROSS-CHECK: {sverkaActiveCount}/{sverkaChecksUi.length}</span>
+        <span>КЛЮЧ: <span style={{ color: anthropicKey ? "var(--ok)" : "var(--warn)" }}>●</span> {anthropicKey ? "активний" : "не заданий — ⚙"}</span>
+        <span style={{ marginLeft: "auto" }}>CLAUDE SONNET · PROMPT-CACHE ON</span>
+      </div>
       <style>{`
         @keyframes spin{to{transform:rotate(360deg)}}
         .qa-bg { background: var(--void); }

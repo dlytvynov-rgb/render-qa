@@ -1,23 +1,34 @@
-/* Viewport design system — tokens */
+/* Zinc Studio+ design system — tokens */
 :root {
-  --void:  #131519;
-  --panel: #1c1f26;
-  --line:  #2a2e37;
-  --text:  #e8e6e1;
-  --dim:   #8b8f98;
-  --amber: #e8a84c;
-  --ok:    #55c47c;
-  --warn:  #e67e22;
-  --fail:  #ef5350;
-  --info:  #56a8e8;
-  --font-ui: "Archivo", "Segoe UI", sans-serif;
+  --void:  #09090B;  /* базовий фон */
+  --panel: #18181B;  /* панелі, картки */
+  --panel2:#1F1F23;  /* підняті елементи */
+  --line:  #27272A;  /* бордери */
+  --line2: #3F3F46;  /* активні бордери */
+  --text:  #FAFAFA;  /* основний текст */
+  --dim:   #A1A1AA;  /* вторинний текст */
+  --dim2:  #71717A;  /* третинний текст */
+  --vio:   #8B5CF6;  /* акцент: violet */
+  --cyan:  #06B6D4;  /* акцент: cyan */
+  --ok:    #22C55E;
+  --warn:  #F59E0B;
+  --fail:  #EF4444;
+  --info:  #56A8E8;
+  --amber: #8B5CF6;  /* legacy alias — стара назва акценту */
+  --grad:  linear-gradient(90deg, #8B5CF6, #06B6D4);
+  --font-ui: "Inter Tight", "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", Consolas, monospace;
 }
 
 body { background: var(--void); color: var(--text); font-family: var(--font-ui); }
 
-/* фокус — видимий, бурштиновий */
-:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+:focus-visible { outline: 2px solid var(--vio); outline-offset: 1px; }
+
+/* градієнтний текст */
+.vp-grad {
+  background: var(--grad);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
 
 /* службова мітка (eyebrow) */
 .vp-label {
@@ -26,40 +37,56 @@ body { background: var(--void); color: var(--text); font-family: var(--font-ui);
 }
 
 /* панель/картка */
-.vp-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.vp-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+
+/* картка режиму з градієнтним бордером в активному стані */
+.vp-mode {
+  background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px;
+  cursor: pointer; transition: border-color .15s, transform .15s;
+}
+.vp-mode:hover { border-color: var(--line2); transform: translateY(-1px); }
+.vp-mode--on {
+  border-color: transparent;
+  background: linear-gradient(var(--panel2), var(--panel2)) padding-box,
+              linear-gradient(120deg, var(--vio), var(--cyan)) border-box;
+}
 
 /* кнопки */
 .vp-btn {
   font-family: var(--font-mono); font-size: 11px; color: var(--dim);
-  background: transparent; border: 1px solid var(--line); border-radius: 6px;
-  padding: 6px 12px; cursor: pointer; transition: border-color .15s, color .15s;
+  background: var(--panel); border: 1px solid var(--line2); border-radius: 8px;
+  padding: 7px 13px; cursor: pointer; transition: border-color .15s, color .15s;
 }
-.vp-btn:hover { border-color: var(--dim); color: var(--text); }
+.vp-btn:hover { border-color: var(--dim2); color: var(--text); }
 .vp-btn--primary {
-  background: var(--amber); border-color: var(--amber); color: #131519; font-weight: 600;
+  background: var(--grad); border: none; color: #fff; font-weight: 700;
+  font-family: var(--font-ui); letter-spacing: .06em;
+  box-shadow: 0 4px 28px rgba(139, 92, 246, .25);
+  transition: filter .15s, transform .15s;
 }
-.vp-btn--primary:hover { filter: brightness(1.08); color: #131519; }
-.vp-btn--primary:disabled { background: var(--line); border-color: var(--line); color: var(--dim); cursor: not-allowed; filter: none; }
+.vp-btn--primary:hover { filter: brightness(1.1); transform: translateY(-1px); color: #fff; }
+.vp-btn--primary:disabled { background: var(--line); color: var(--dim2); cursor: not-allowed; filter: none; transform: none; box-shadow: none; }
 
 /* інпут */
 .vp-input {
-  background: var(--void); border: 1px solid var(--line); border-radius: 6px;
+  background: var(--void); border: 1px solid var(--line2); border-radius: 8px;
   color: var(--text); font-family: var(--font-mono); font-size: 11px;
   padding: 7px 10px; outline: none; box-sizing: border-box;
 }
-.vp-input::placeholder { color: var(--dim); opacity: .6; }
+.vp-input::placeholder { color: var(--dim2); }
 
 /* дропзона + marching ants */
 .vp-dropzone {
-  border: 1.5px dashed var(--line); border-radius: 8px; background: var(--panel);
+  border: 1.5px dashed var(--line2); border-radius: 12px; background: var(--panel);
   transition: border-color .15s;
 }
+.vp-dropzone:hover { border-color: var(--dim2); }
 .vp-dropzone--drag {
   border-color: transparent;
-  background-image: linear-gradient(90deg, var(--amber) 50%, transparent 50%),
-                    linear-gradient(90deg, var(--amber) 50%, transparent 50%),
-                    linear-gradient(0deg,  var(--amber) 50%, transparent 50%),
-                    linear-gradient(0deg,  var(--amber) 50%, transparent 50%);
+  background-image: linear-gradient(90deg, var(--vio) 50%, transparent 50%),
+                    linear-gradient(90deg, var(--cyan) 50%, transparent 50%),
+                    linear-gradient(0deg,  var(--vio) 50%, transparent 50%),
+                    linear-gradient(0deg,  var(--cyan) 50%, transparent 50%);
   background-repeat: repeat-x, repeat-x, repeat-y, repeat-y;
   background-size: 12px 1.5px, 12px 1.5px, 1.5px 12px, 1.5px 12px;
   background-position: 0 0, 0 100%, 0 0, 100% 0;
@@ -72,8 +99,49 @@ body { background: var(--void); color: var(--text); font-family: var(--font-ui);
   .vp-dropzone--drag { animation: none; }
 }
 
+/* hero-дропзона рендерів: сяйво + ghost-кадри */
+.vp-hero { position: relative; overflow: hidden; text-align: center; padding: 30px 24px 26px; cursor: pointer; }
+.vp-hero::after {
+  content: ""; position: absolute; inset: -30%;
+  background: radial-gradient(ellipse at 25% 0%, rgba(139,92,246,.13), transparent 50%),
+              radial-gradient(ellipse at 85% 100%, rgba(6,182,212,.09), transparent 50%);
+  pointer-events: none;
+}
+.vp-ghosts { display: flex; gap: 14px; justify-content: center; margin-bottom: 16px; }
+.vp-ghost { width: 150px; aspect-ratio: 16/10; border: 1px dashed var(--line2); border-radius: 8px; position: relative; opacity: .8; }
+.vp-ghost::before, .vp-ghost::after { content: ""; position: absolute; background: var(--line); }
+.vp-ghost::before { left: 12%; right: 12%; bottom: 26%; height: 1px; transform: rotate(-7deg); }
+.vp-ghost::after { left: 55%; top: 20%; width: 1px; bottom: 26%; }
+.vp-ghost--mid { width: 170px; opacity: 1; border-color: #52525B; }
+.vp-ghost .vp-sun { position: absolute; top: 16%; left: 16%; width: 14px; height: 14px; border: 1px solid var(--line2); border-radius: 50%; }
+
 /* чіп файла/тега */
 .vp-chip {
   font-family: var(--font-mono); font-size: 9px; color: var(--dim);
   background: var(--void); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px;
+}
+
+/* слот-пігулка */
+.vp-pill {
+  font-family: var(--font-mono); font-size: 11px; padding: 7px 14px; border-radius: 20px;
+  background: rgba(139,92,246,.1); color: #A78BFA; border: 1px solid rgba(139,92,246,.32);
+}
+.vp-pill--ghost { background: transparent; color: var(--dim2); border: 1.5px dashed var(--line2); cursor: pointer; transition: color .15s, border-color .15s; }
+.vp-pill--ghost:hover { color: var(--dim); border-color: var(--dim2); }
+
+/* Cross-Check readiness чіпи */
+.vp-cci {
+  font-family: var(--font-mono); font-size: 10px; padding: 5px 10px; border-radius: 6px;
+  border: 1px solid var(--line); color: var(--dim2); display: inline-flex; gap: 6px; align-items: center;
+}
+.vp-cci::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--line2); }
+.vp-cci--live { color: var(--text); border-color: rgba(34,197,94,.35); }
+.vp-cci--live::before { background: var(--ok); box-shadow: 0 0 6px rgba(34,197,94,.7); }
+
+/* статус-бар */
+.vp-statusbar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 90;
+  display: flex; gap: 22px; align-items: center; padding: 8px 24px;
+  background: rgba(9,9,11,.85); backdrop-filter: blur(10px); border-top: 1px solid var(--line);
+  font-family: var(--font-mono); font-size: 10px; color: var(--dim2);
 }
