@@ -1,0 +1,79 @@
+/* Viewport design system — tokens */
+:root {
+  --void:  #131519;
+  --panel: #1c1f26;
+  --line:  #2a2e37;
+  --text:  #e8e6e1;
+  --dim:   #8b8f98;
+  --amber: #e8a84c;
+  --ok:    #55c47c;
+  --warn:  #e67e22;
+  --fail:  #ef5350;
+  --info:  #56a8e8;
+  --font-ui: "Archivo", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", Consolas, monospace;
+}
+
+body { background: var(--void); color: var(--text); font-family: var(--font-ui); }
+
+/* фокус — видимий, бурштиновий */
+:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+
+/* службова мітка (eyebrow) */
+.vp-label {
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.14em;
+  color: var(--dim); text-transform: uppercase;
+}
+
+/* панель/картка */
+.vp-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+
+/* кнопки */
+.vp-btn {
+  font-family: var(--font-mono); font-size: 11px; color: var(--dim);
+  background: transparent; border: 1px solid var(--line); border-radius: 6px;
+  padding: 6px 12px; cursor: pointer; transition: border-color .15s, color .15s;
+}
+.vp-btn:hover { border-color: var(--dim); color: var(--text); }
+.vp-btn--primary {
+  background: var(--amber); border-color: var(--amber); color: #131519; font-weight: 600;
+}
+.vp-btn--primary:hover { filter: brightness(1.08); color: #131519; }
+.vp-btn--primary:disabled { background: var(--line); border-color: var(--line); color: var(--dim); cursor: not-allowed; filter: none; }
+
+/* інпут */
+.vp-input {
+  background: var(--void); border: 1px solid var(--line); border-radius: 6px;
+  color: var(--text); font-family: var(--font-mono); font-size: 11px;
+  padding: 7px 10px; outline: none; box-sizing: border-box;
+}
+.vp-input::placeholder { color: var(--dim); opacity: .6; }
+
+/* дропзона + marching ants */
+.vp-dropzone {
+  border: 1.5px dashed var(--line); border-radius: 8px; background: var(--panel);
+  transition: border-color .15s;
+}
+.vp-dropzone--drag {
+  border-color: transparent;
+  background-image: linear-gradient(90deg, var(--amber) 50%, transparent 50%),
+                    linear-gradient(90deg, var(--amber) 50%, transparent 50%),
+                    linear-gradient(0deg,  var(--amber) 50%, transparent 50%),
+                    linear-gradient(0deg,  var(--amber) 50%, transparent 50%);
+  background-repeat: repeat-x, repeat-x, repeat-y, repeat-y;
+  background-size: 12px 1.5px, 12px 1.5px, 1.5px 12px, 1.5px 12px;
+  background-position: 0 0, 0 100%, 0 0, 100% 0;
+  animation: vp-ants .5s linear infinite;
+}
+@keyframes vp-ants {
+  to { background-position: 12px 0, -12px 100%, 0 -12px, 100% 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vp-dropzone--drag { animation: none; }
+}
+
+/* чіп файла/тега */
+.vp-chip {
+  font-family: var(--font-mono); font-size: 9px; color: var(--dim);
+  background: var(--void); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px;
+}
