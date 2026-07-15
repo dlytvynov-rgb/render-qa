@@ -67,15 +67,18 @@ export function activeSverka(docTypes, mode) {
 }
 
 // Мержить AI-відповідь з override-ами ПМ у 13 рядків для UI/PDF.
+// AI-статус з реальним вердиктом «оживляє» пункт навіть якщо файлів зараз
+// немає (відновлена сесія) — активність на момент аналізу вже зафіксована у відповіді.
 export function sverkaRows(aiSverka, overrides, activeChecks) {
   const byId = {};
   (aiSverka || []).forEach(x => { if (x && x.id) byId[x.id] = x; });
   return activeChecks.map(c => {
     const ai = byId[c.id];
     const ov = overrides ? overrides[c.id] : undefined;
-    const status = !c.active ? "no_material" : (ov || ai?.status || "unchecked");
+    const active = c.active || (!!ai && !!ai.status && ai.status !== "no_material");
+    const status = !active ? "no_material" : (ov || ai?.status || "unchecked");
     return {
-      id: c.id, label: c.label, needs: c.needs, active: c.active, status,
+      id: c.id, label: c.label, needs: c.needs, active, status,
       note: ai?.note || "", doc_ref: ai?.doc_ref || "", zone: ai?.zone || null,
       overridden: !!ov,
     };

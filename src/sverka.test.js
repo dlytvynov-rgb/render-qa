@@ -79,9 +79,13 @@ describe("sverkaRows", () => {
     const rows = sverkaRows([{ id: "S10", status: "fail" }], { S10: "ok" }, checks);
     expect(rows.find(x => x.id === "S10")).toMatchObject({ status: "ok", overridden: true });
   });
-  it("неактивний пункт → no_material навіть якщо AI щось повернув", () => {
-    const rows = sverkaRows([{ id: "S7", status: "ok" }], {}, checks);
-    expect(rows.find(x => x.id === "S7").status).toBe("no_material");
+  it("AI-вердикт оживляє пункт без живих файлів (відновлена сесія)", () => {
+    const rows = sverkaRows([{ id: "S7", status: "ok", note: "по плану" }], {}, checks);
+    expect(rows.find(x => x.id === "S7")).toMatchObject({ status: "ok", active: true });
+  });
+  it("неактивний пункт з AI no_material лишається no_material", () => {
+    const rows = sverkaRows([{ id: "S7", status: "no_material" }], {}, checks);
+    expect(rows.find(x => x.id === "S7")).toMatchObject({ status: "no_material", active: false });
   });
   it("активний пункт без відповіді AI → unchecked; без sverka взагалі — теж", () => {
     expect(sverkaRows([], {}, checks).find(x => x.id === "S2").status).toBe("unchecked");

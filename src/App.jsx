@@ -2491,11 +2491,8 @@ ${summaries}
         </div>` : "";
 
       const svAiRows = data.sverka || [];
-      const svRowsPdf = sverkaRows(svAiRows, data.sverkaOverrides, activeSverka([], mode)).map(r => {
-        // активність відновлюємо з відповіді AI: no_material лишається як прийшло
-        const ai = svAiRows.find(x => x.id === r.id);
-        return ai ? { ...r, status: data.sverkaOverrides?.[r.id] || ai.status, active: ai.status !== "no_material" } : r;
-      });
+      // активність пунктів відновлюється з AI-відповіді всередині sverkaRows
+      const svRowsPdf = sverkaRows(svAiRows, data.sverkaOverrides, activeSverka([], mode));
       const svHtml = svAiRows.length ? `
         <div class="sub-title">Cross-Check (${svRowsPdf.filter(r => ["ok","warn","fail"].includes(r.status)).length}/${svRowsPdf.length})</div>
         <div class="def-list">
