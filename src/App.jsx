@@ -1931,6 +1931,7 @@ export default function App() {
   });
   const saveCustomSlots = slots => { setCustomSlots(slots); try { localStorage.setItem("rqa_custom_slots", JSON.stringify(slots)); } catch { /* ignore */ } };
   const [slotMenuOpen, setSlotMenuOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Після конвертації DWG→DXF оновлюємо файл у списку
   const handleDwgConverted = useCallback((fileList, dwgFile, dxfText) => {
@@ -2973,22 +2974,25 @@ ${fileList}
 
   return (
     <div className="qa-bg" style={{ minHeight: "100vh", fontFamily: "var(--font-ui)" }}>
-      <div style={{ background: "#1a1a1a", color: "#f2f0ec", padding: "12px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 100 }}>
-        <div>
-          <div style={{ fontSize: 10, letterSpacing: "0.2em", color: "#555", fontFamily: "monospace" }}>RENDER QA</div>
-          <div style={{ fontSize: 16, fontWeight: 400, letterSpacing: "0.05em" }}>Перевірка рендерів</div>
+      <div style={{ background: "var(--panel)", borderBottom: "1px solid var(--line)", color: "var(--text)", padding: "10px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 100 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+          <span className="vp-label" style={{ color: "var(--amber)" }}>RENDER QA</span>
+          <span style={{ fontSize: 15, fontWeight: 500, letterSpacing: "0.02em" }}>Перевірка рендерів</span>
         </div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          {step === 2 && sel !== null && <button onClick={() => setSel(null)} style={{ background: "transparent", border: "1px solid #444", color: "#aaa", padding: "5px 12px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 4 }}>← {isRev ? "Раунди" : "Ракурси"}</button>}
-          {step === 2 && <button onClick={reset} style={{ background: "transparent", border: "1px solid #444", color: "#aaa", padding: "5px 12px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 4 }}>← Нова перевірка</button>}
-          {step === 2 && perData.some(d => d && !d.error) && <button onClick={generateReport} style={{ background: "transparent", border: "1px solid #27ae60", color: "#27ae60", padding: "5px 12px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", borderRadius: 4 }}>📄 PDF</button>}
-          <input
-            type="password"
-            value={anthropicKey}
-            onChange={e => saveAnthropicKey(e.target.value)}
-            placeholder="Anthropic API key"
-            style={{ background: "#111", border: `1px solid ${anthropicKey ? "#27ae60" : "#555"}`, color: "#aaa", padding: "5px 10px", fontSize: 11, fontFamily: "monospace", borderRadius: 4, width: 180, outline: "none" }}
-          />
+        <div style={{ display: "flex", gap: 8, alignItems: "center", position: "relative" }}>
+          {step === 2 && sel !== null && <button className="vp-btn" onClick={() => setSel(null)}>← {isRev ? "Раунди" : "Ракурси"}</button>}
+          {step === 2 && <button className="vp-btn" onClick={reset}>← Нова перевірка</button>}
+          {step === 2 && perData.some(d => d && !d.error) && <button className="vp-btn" onClick={generateReport} style={{ borderColor: "var(--ok)", color: "var(--ok)" }}>📄 PDF</button>}
+          <button className="vp-btn" onClick={() => setSettingsOpen(o => !o)} title="Ключі та налаштування" style={{ borderColor: anthropicKey ? "var(--ok)" : "var(--warn)" }}>⚙</button>
+          {settingsOpen && (
+            <div className="vp-panel" style={{ position: "absolute", top: "120%", right: 0, zIndex: 200, padding: 14, display: "flex", flexDirection: "column", gap: 8, width: 300, boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
+              <div className="vp-label">Anthropic API key</div>
+              <input type="password" className="vp-input" value={anthropicKey} onChange={e => saveAnthropicKey(e.target.value)} placeholder="sk-ant-…" style={{ width: "100%" }} />
+              <div className="vp-label">Archivizer token</div>
+              <input type="password" className="vp-input" value={archivizerToken} onChange={e => saveArchivizerToken(e.target.value)} placeholder="токен" style={{ width: "100%" }} />
+              <div style={{ fontSize: 9, color: "var(--dim)", fontFamily: "var(--font-mono)" }}>Зберігаються локально в браузері</div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -3085,7 +3089,7 @@ ${fileList}
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <div style={{ background: "#0d1a2b", border: "1px solid #2980b944", borderRadius: 10, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
                 <div style={{ fontSize: 10, letterSpacing: "0.14em", color: "#2980b9", fontFamily: "monospace", marginBottom: 4 }}>ARCHIVIZER</div>
-                <input type="password" value={archivizerToken} onChange={e => saveArchivizerToken(e.target.value)} placeholder="API токен" style={{ width: "100%", background: "#111", border: `1px solid ${archivizerToken ? "#27ae60" : "#333"}`, color: "#aaa", padding: "6px 10px", fontSize: 11, fontFamily: "monospace", borderRadius: 4, outline: "none", boxSizing: "border-box", marginBottom: 6 }} />
+                {!archivizerToken.trim() && <div style={{ fontSize: 10, color: "var(--warn)", fontFamily: "var(--font-mono)" }}>токен не заданий — додай у ⚙ справа вгорі</div>}
                 <div style={{ display: "flex", gap: 8 }}>
                   <input type="text" value={archivizerUrl} onChange={e => setArchivizerUrl(e.target.value)} onKeyDown={e => e.key === "Enter" && loadFromArchivizer()} placeholder="https://archivizer.com/tasks/WF8PSTKA" style={{ flex: 1, background: "#111", border: "1px solid #333", color: "#aaa", padding: "6px 10px", fontSize: 11, fontFamily: "monospace", borderRadius: 4, outline: "none" }} />
                   <button onClick={loadFromArchivizer} disabled={archivizerStatus?.loading} style={{ background: archivizerStatus?.loading ? "#333" : "#2980b9", border: "none", color: "#fff", borderRadius: 4, padding: "6px 16px", cursor: archivizerStatus?.loading ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "monospace", whiteSpace: "nowrap" }}>
