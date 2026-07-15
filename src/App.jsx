@@ -304,10 +304,10 @@ function useFileList(zoneKey) {
   const ref = useRef([]);
   const [, setTick] = useState(0);
   const bump = useCallback(() => setTick(t => t + 1), []);
-  const add = useCallback(async (file) => {
+  const add = useCallback(async (file, forcedType) => {
     const id = "f" + Date.now() + "_" + Math.random().toString(36).slice(2);
     const ctrl = new AbortController();
-    const docType = docTypeFromName(file.name, zoneKey);
+    const docType = forcedType || docTypeFromName(file.name, zoneKey);
     ref.current = [...ref.current, { _id: id, _loading: true, _progress: 0, _ctrl: ctrl, _docType: docType, filename: file.name, preview: null, pages: [], type: null }];
     bump();
     try {
@@ -1779,6 +1779,47 @@ function Grid({ items, perData, statuses, globalSummary, onSelect, onRetry, mode
   );
 }
 
+// ─── Custom typed slot ────────────────────────────────────────────────────────
+function CustomSlot({ type, files, onAdd, onRemoveFile, onRemoveSlot }) {
+  const inputRef = useRef(); const [drag, setDrag] = useState(false); const ctr = useRef(0);
+  const ico = { pdf: "📄", dwg: "📐", dxf: "📐", excel: "📊", text: "📝", image: "🖼️", other: "📎" };
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+        <span className="vp-label" style={{ color: "var(--amber)" }}>{DOC_TYPES[type]}</span>
+        <span className="vp-chip">слот</span>
+        <span style={{ flex: 1 }} />
+        <button onClick={() => files.length === 0 && onRemoveSlot(type)} title={files.length ? "Спочатку прибери файли" : "Прибрати слот"}
+          style={{ background: "none", border: "none", color: files.length ? "var(--line)" : "var(--dim)", cursor: files.length ? "default" : "pointer", fontSize: 11 }}>✕</button>
+      </div>
+      <div className={`vp-dropzone${drag ? " vp-dropzone--drag" : ""}`}
+        onDragEnter={e => { e.preventDefault(); ctr.current++; setDrag(true); }}
+        onDragLeave={e => { e.preventDefault(); if (--ctr.current === 0) setDrag(false); }}
+        onDragOver={e => e.preventDefault()}
+        onDrop={e => { e.preventDefault(); setDrag(false); ctr.current = 0; Array.from(e.dataTransfer.files).forEach(f => onAdd(f, type)); }}
+        style={{ padding: 8, minHeight: 78, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", justifyContent: files.length === 0 ? "center" : "flex-start" }}>
+        {files.map((f, i) => {
+          const prev = f.preview || f.pages?.[0]?.preview;
+          return (
+            <div key={f._id || i} style={{ position: "relative", width: 62, height: 62, flexShrink: 0 }}>
+              {prev
+                ? <img src={prev} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 5, border: "1px solid var(--line)", filter: f._loading ? "brightness(0.4)" : "none" }} />
+                : <div style={{ width: "100%", height: "100%", borderRadius: 5, border: "1px solid var(--line)", background: "var(--void)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}>
+                    <div style={{ fontSize: 16 }}>{f._error ? "⚠️" : ico[f.type] || ico.other}</div>
+                    <div style={{ fontSize: 7, color: "var(--dim)", fontFamily: "var(--font-mono)" }}>{f._error ? "ERR" : (f.ext || "...")}</div>
+                  </div>}
+              {f._loading && <div style={{ position: "absolute", inset: 0, borderRadius: 5, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: "#fff", fontFamily: "var(--font-mono)" }}>{f._progress || 0}%</div>}
+              {!f._loading && <button onClick={() => onRemoveFile(f._id)} style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, background: "var(--fail)", color: "#fff", border: "none", borderRadius: "50%", cursor: "pointer", fontSize: 9, display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>}
+            </div>
+          );
+        })}
+        <div onClick={() => inputRef.current.click()} style={{ width: 62, height: 62, border: "1.5px dashed var(--line)", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "var(--dim)", fontSize: 18, flexShrink: 0 }}>+</div>
+      </div>
+      <input ref={inputRef} type="file" multiple style={{ display: "none" }} onChange={e => { Array.from(e.target.files).forEach(f => onAdd(f, type)); e.target.value = ""; }} />
+    </div>
+  );
+}
+
 // ─── Upload box ───────────────────────────────────────────────────────────────
 function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", note, onTag, onDocType }) {
   const inputRef = useRef(); const [drag, setDrag] = useState(false); const ctr = useRef(0);
@@ -1884,6 +1925,12 @@ export default function App() {
   const analysisRunningRef = useRef(false);
   const renders = useFileList("renders"); const briefs = useFileList("briefs"); const refs = useFileList("refs"); const draws = useFileList("draws");
   const revBriefs = useFileList("briefs"); const revRefs = useFileList("refs"); const revDraws = useFileList("draws");
+  const customFiles = useFileList("custom");
+  const [customSlots, setCustomSlots] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("rqa_custom_slots")) || []; } catch { return []; }
+  });
+  const saveCustomSlots = slots => { setCustomSlots(slots); try { localStorage.setItem("rqa_custom_slots", JSON.stringify(slots)); } catch { /* ignore */ } };
+  const [slotMenuOpen, setSlotMenuOpen] = useState(false);
 
   // Після конвертації DWG→DXF оновлюємо файл у списку
   const handleDwgConverted = useCallback((fileList, dwgFile, dxfText) => {
@@ -1918,6 +1965,15 @@ export default function App() {
   const readyFiles = fl => (fl.files || []).filter(f => !f._loading && !f._error && f._done && (
     f.pages?.some(p => p.b64) || f.textContent || f.type === "dwg"
   ));
+  const CUSTOM_CATEGORY = { rcp: "draw", elevation: "draw", landscape: "draw", unfold: "draw", detail: "draw", floorplan: "draw", ffe: "brief", todo: "brief", reference: "ref" };
+  const customByCategory = files => {
+    const out = { briefLike: [], refLike: [], drawLike: [] };
+    (files || []).forEach(f => {
+      const cat = CUSTOM_CATEGORY[f._docType] || "brief";
+      if (cat === "draw") out.drawLike.push(f); else if (cat === "ref") out.refLike.push(f); else out.briefLike.push(f);
+    });
+    return out;
+  };
   const matNote = files => {
     const ex = (files || []).filter(f => f.type === "excel" && f.textContent);
     const dxf = (files || []).filter(f => f.type === "dxf" && f.textContent);
@@ -2035,9 +2091,10 @@ ${JSON_SCHEMA}` }];
       setErr(""); setStep(2); setSel(null);
       const results = rImages.map(() => null); setPerData([...results]);
       setStatuses(rImages.map((_, i) => i === 0 ? "Аналізую…" : "У черзі…"));
-      const drawsList = readyFiles(draws);
-      const briefsList = readyFiles(briefs);
-      const refsList = readyFiles(refs);
+      const custom = customByCategory(readyFiles(customFiles));
+      const drawsList = [...readyFiles(draws), ...custom.drawLike];
+      const briefsList = [...readyFiles(briefs), ...custom.briefLike];
+      const refsList = [...readyFiles(refs), ...custom.refLike];
       const mn = matNote([...briefsList, ...drawsList]);
       const drawCount = drawsList.filter(d => d.pages?.some(p => p.b64)).length;
       const hasDwgText = drawsList.filter(d => (d.type === "dxf" || d.type === "dwg") && d.textContent).length > 0;
@@ -2603,9 +2660,10 @@ ${summaries}
 
   async function parseTzCards() {
     if (!anthropicKey.trim()) { setErr("Введіть Anthropic API ключ"); return; }
-    const briefsList = readyFiles(briefs);
-    const refsList = readyFiles(refs);
-    const drawsList = readyFiles(draws);
+    const customTz = customByCategory(readyFiles(customFiles));
+    const briefsList = [...readyFiles(briefs), ...customTz.briefLike];
+    const refsList = [...readyFiles(refs), ...customTz.refLike];
+    const drawsList = [...readyFiles(draws), ...customTz.drawLike];
     const hasMaterials = briefText.trim() || briefsList.length > 0 || refsList.length > 0 || drawsList.length > 0;
     if (!hasMaterials) { setTzCards([]); setTzReview(true); return; }
     setTzParsing(true); setErr("");
@@ -2862,7 +2920,7 @@ ${fileList}
 
   function reset() {
     setStep(1); setSel(null); setErr(""); setBriefText("");
-    renders.ref.current = []; briefs.ref.current = []; refs.ref.current = []; draws.ref.current = [];
+    renders.ref.current = []; briefs.ref.current = []; refs.ref.current = []; draws.ref.current = []; customFiles.ref.current = [];
     revBriefs.ref.current = []; revRefs.ref.current = []; revDraws.ref.current = [];
     pairBefores.current = {}; pairAfters.current = {};
     setPairs([{ id: 1, comment: "" }]); setPerData([]); setStatuses([]); setGlobalSum("");
@@ -2881,9 +2939,35 @@ ${fileList}
     if (isRev) { const p = vPairs[i]; return { renderFiles: getPF(p.id, "after").filter(f => !f._loading && !f._error), beforeFiles: getPF(p.id, "before").filter(f => !f._loading && !f._error), drawings: revDraws.files }; }
     return { renderFiles: [rImages[i]], beforeFiles: [], drawings: draws.files };
   };
+  const slotsJsx = (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {customSlots.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 12 }}>
+          {customSlots.map(t => (
+            <CustomSlot key={t} type={t}
+              files={customFiles.files.filter(f => f._docType === t)}
+              onAdd={customFiles.add}
+              onRemoveFile={id => { const idx = customFiles.files.findIndex(f => f._id === id); if (idx >= 0) customFiles.remove(idx); }}
+              onRemoveSlot={type => saveCustomSlots(customSlots.filter(x => x !== type))} />
+          ))}
+        </div>
+      )}
+      <div style={{ position: "relative", alignSelf: "flex-start" }}>
+        <button className="vp-btn" onClick={() => setSlotMenuOpen(o => !o)}>+ слот під тип документа</button>
+        {slotMenuOpen && (
+          <div className="vp-panel" style={{ position: "absolute", top: "110%", left: 0, zIndex: 50, padding: 6, display: "flex", flexDirection: "column", gap: 2, minWidth: 170 }}>
+            {Object.entries(DOC_TYPES).filter(([k]) => !customSlots.includes(k)).map(([k, v]) => (
+              <button key={k} className="vp-btn" style={{ border: "none", textAlign: "left" }}
+                onClick={() => { saveCustomSlots([...customSlots, k]); setSlotMenuOpen(false); }}>{v}</button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
   const allDocFiles = isRev
     ? [...revBriefs.files, ...revRefs.files, ...revDraws.files]
-    : [...briefs.files, ...refs.files, ...draws.files];
+    : [...briefs.files, ...refs.files, ...draws.files, ...customFiles.files];
   const sverkaChecksUi = activeSverka(allDocFiles.map(f => f._docType), mode);
   const detailProps = sel !== null && sel < gridItems.length ? getDP(sel) : null;
 
@@ -2994,6 +3078,7 @@ ${fileList}
                   onDocType={draws.updateDocType}
                 />
               </div>
+              {slotsJsx}
             </div>
           )}
           {mode === "first" && (
@@ -3025,6 +3110,7 @@ ${fileList}
                   onDocType={draws.updateDocType}
                 />
               </div>
+              {slotsJsx}
               <div style={{ background: "#f0faf4", border: "1px solid #27ae6033", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "#555", fontFamily: "monospace" }}>
                 💡 Excel/CSV з переліком матеріалів — Claude перевірить відповідність кожного на рендері
               </div>
@@ -3158,8 +3244,9 @@ ${fileList}
             const rImages = readyFiles(renders).filter(f => f.pages?.some(p => p.b64));
             const render = rImages[ri]; if (!render) return;
             const newStatuses = [...statuses]; newStatuses[ri] = "Аналізую…"; setStatuses([...newStatuses]);
-            const drawsList = readyFiles(draws);
-            const briefsList = readyFiles(briefs);
+            const customRv = customByCategory(readyFiles(customFiles));
+            const drawsList = [...readyFiles(draws), ...customRv.drawLike];
+            const briefsList = [...readyFiles(briefs), ...customRv.briefLike];
             const mn = matNote([...briefsList, ...drawsList]);
             const excNote = excluded.length > 0
               ? `\n\nІГНОРУЙ ЦІ ПУНКТИ — відмічені як нерелевантні для даного ракурсу:\n${excluded.map((e, i) => `${i+1}. [${e.type}] ${e.text}`).join("\n")}\nНЕ включай їх в items/corrections/defects та не знижуй оцінку через них.`
@@ -3193,7 +3280,7 @@ ${JSON_SCHEMA}` }];
               parts.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: pg.b64 } });
             });
             parts.push(...filesToParts(briefsList, "БРИФ"));
-            parts.push(...filesToParts(readyFiles(refs), "РЕФЕРЕНС"));
+            parts.push(...filesToParts([...readyFiles(refs), ...customRv.refLike], "РЕФЕРЕНС"));
             parts.push(...filesToParts(drawsList, "КРЕСЛЕННЯ"));
             try {
               const p = await callAPI(parts, 2, anthropicKey);
