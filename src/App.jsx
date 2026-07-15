@@ -1856,7 +1856,7 @@ function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", n
               <div className="vp-ghost vp-ghost--mid"><span className="vp-sun" /></div>
               <div className="vp-ghost"><span className="vp-sun" /></div>
             </div>
-            <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: "-0.01em" }}>Скинь сюди рендери</div>
+            <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em" }}>Скинь сюди рендери</div>
             <div style={{ fontSize: 12, color: "var(--dim2)", marginTop: 5 }}>JPG · PNG · PDF — або натисни, щоб обрати файли</div>
           </div>
         ) : (
@@ -2999,7 +2999,7 @@ ${fileList}
     <div className="vp-panel" style={{ padding: "14px 16px" }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 11 }}>
         <span className="vp-label">CROSS-CHECK</span>
-        <span style={{ fontSize: 12, color: "var(--dim2)" }}>цей пакет активує <b className="vp-grad" style={{ fontWeight: 700 }}>{sverkaActiveCount} з {sverkaChecksUi.length}</b> перевірок</span>
+        <span style={{ fontSize: 12, color: "var(--dim2)" }}>цей пакет активує <b style={{ color: "#A99EE0", fontWeight: 600 }}>{sverkaActiveCount} з {sverkaChecksUi.length}</b> перевірок</span>
       </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
         {sverkaChecksUi.map(c => <span key={c.id} className={`vp-cci${c.active ? " vp-cci--live" : ""}`}>{c.id} {c.label}</span>)}
@@ -3083,8 +3083,8 @@ ${fileList}
       {step === 1 && !tzReview && (
         <div style={{ maxWidth: 1100, margin: "0 auto", padding: "30px 32px", display: "flex", flexDirection: "column", gap: 20, boxSizing: "border-box" }}>
           <div>
-            <div className="vp-label" style={{ marginBottom: 8 }}><b style={{ color: "var(--dim)", fontWeight: 500 }}>01 ПАКЕТ</b> → 02 ПІДТВЕРДЖЕННЯ ТЗ → 03 РЕЗУЛЬТАТ</div>
-            <div style={{ fontSize: 27, fontWeight: 700, letterSpacing: "-0.025em" }}>Перевір рендер <span className="vp-grad">до здачі клієнту</span></div>
+            <div className="vp-label" style={{ marginBottom: 8, opacity: .75 }}><b style={{ color: "var(--dim)", fontWeight: 500 }}>01 пакет</b> → 02 підтвердження ТЗ → 03 результат</div>
+            <div style={{ fontSize: 23, fontWeight: 600, letterSpacing: "-0.02em" }}>Перевір рендер <span style={{ color: "#A99EE0" }}>до здачі клієнту</span></div>
             <div style={{ color: "var(--dim2)", fontSize: 13.5, marginTop: 7, maxWidth: 580, lineHeight: 1.6 }}>Завантаж пакет — бриф, креслення, референси — і фінальні рендери. Claude звірить кожен пункт ТЗ і збере чеклист Cross-Check.</div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
@@ -3341,7 +3341,7 @@ ${JSON_SCHEMA}` }];
 
       <div className="vp-statusbar">
         <span>ПАКЕТ: <b style={{ color: "var(--dim)", fontWeight: 500 }}>{pkgCount} файлів</b></span>
-        <span className="vp-grad">CROSS-CHECK: {sverkaActiveCount}/{sverkaChecksUi.length}</span>
+        <span style={{ color: "#A99EE0" }}>CROSS-CHECK: {sverkaActiveCount}/{sverkaChecksUi.length}</span>
         <span>КЛЮЧ: <span style={{ color: anthropicKey ? "var(--ok)" : "var(--warn)" }}>●</span> {anthropicKey ? "активний" : "не заданий — ⚙"}</span>
         <span style={{ marginLeft: "auto" }}>CLAUDE SONNET · PROMPT-CACHE ON</span>
       </div>

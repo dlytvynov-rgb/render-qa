@@ -8,14 +8,14 @@
   --text:  #FAFAFA;  /* основний текст */
   --dim:   #A1A1AA;  /* вторинний текст */
   --dim2:  #71717A;  /* третинний текст */
-  --vio:   #8B5CF6;  /* акцент: violet */
-  --cyan:  #06B6D4;  /* акцент: cyan */
+  --vio:   #7C6BD6;  /* акцент: violet (приглушений) */
+  --cyan:  #3FA7C2;  /* акцент: cyan (приглушений) */
   --ok:    #22C55E;
   --warn:  #F59E0B;
   --fail:  #EF4444;
   --info:  #56A8E8;
   --amber: #8B5CF6;  /* legacy alias — стара назва акценту */
-  --grad:  linear-gradient(90deg, #8B5CF6, #06B6D4);
+  --grad:  linear-gradient(90deg, #7C6BD6, #3FA7C2);
   --font-ui: "Inter Tight", "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", Consolas, monospace;
 }
@@ -32,7 +32,7 @@ body { background: var(--void); color: var(--text); font-family: var(--font-ui);
 
 /* службова мітка (eyebrow) */
 .vp-label {
-  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.14em;
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em;
   color: var(--dim); text-transform: uppercase;
 }
 
@@ -48,7 +48,7 @@ body { background: var(--void); color: var(--text); font-family: var(--font-ui);
 .vp-mode--on {
   border-color: transparent;
   background: linear-gradient(var(--panel2), var(--panel2)) padding-box,
-              linear-gradient(120deg, var(--vio), var(--cyan)) border-box;
+              linear-gradient(120deg, rgba(124,107,214,.75), rgba(63,167,194,.6)) border-box;
 }
 
 /* кнопки */
@@ -61,7 +61,7 @@ body { background: var(--void); color: var(--text); font-family: var(--font-ui);
 .vp-btn--primary {
   background: var(--grad); border: none; color: #fff; font-weight: 700;
   font-family: var(--font-ui); letter-spacing: .06em;
-  box-shadow: 0 4px 28px rgba(139, 92, 246, .25);
+  box-shadow: 0 2px 14px rgba(124, 107, 214, .16);
   transition: filter .15s, transform .15s;
 }
 .vp-btn--primary:hover { filter: brightness(1.1); transform: translateY(-1px); color: #fff; }
@@ -103,16 +103,16 @@ body { background: var(--void); color: var(--text); font-family: var(--font-ui);
 .vp-hero { position: relative; overflow: hidden; text-align: center; padding: 30px 24px 26px; cursor: pointer; }
 .vp-hero::after {
   content: ""; position: absolute; inset: -30%;
-  background: radial-gradient(ellipse at 25% 0%, rgba(139,92,246,.13), transparent 50%),
-              radial-gradient(ellipse at 85% 100%, rgba(6,182,212,.09), transparent 50%);
+  background: radial-gradient(ellipse at 25% 0%, rgba(124,107,214,.08), transparent 50%),
+              radial-gradient(ellipse at 85% 100%, rgba(63,167,194,.05), transparent 50%);
   pointer-events: none;
 }
 .vp-ghosts { display: flex; gap: 14px; justify-content: center; margin-bottom: 16px; }
-.vp-ghost { width: 150px; aspect-ratio: 16/10; border: 1px dashed var(--line2); border-radius: 8px; position: relative; opacity: .8; }
+.vp-ghost { width: 150px; aspect-ratio: 16/10; border: 1px dashed var(--line); border-radius: 8px; position: relative; opacity: .55; }
 .vp-ghost::before, .vp-ghost::after { content: ""; position: absolute; background: var(--line); }
 .vp-ghost::before { left: 12%; right: 12%; bottom: 26%; height: 1px; transform: rotate(-7deg); }
 .vp-ghost::after { left: 55%; top: 20%; width: 1px; bottom: 26%; }
-.vp-ghost--mid { width: 170px; opacity: 1; border-color: #52525B; }
+.vp-ghost--mid { width: 170px; opacity: .8; border-color: var(--line2); }
 .vp-ghost .vp-sun { position: absolute; top: 16%; left: 16%; width: 14px; height: 14px; border: 1px solid var(--line2); border-radius: 50%; }
 
 /* чіп файла/тега */
@@ -124,7 +124,7 @@ body { background: var(--void); color: var(--text); font-family: var(--font-ui);
 /* слот-пігулка */
 .vp-pill {
   font-family: var(--font-mono); font-size: 11px; padding: 7px 14px; border-radius: 20px;
-  background: rgba(139,92,246,.1); color: #A78BFA; border: 1px solid rgba(139,92,246,.32);
+  background: rgba(124,107,214,.09); color: #A99EE0; border: 1px solid rgba(124,107,214,.26);
 }
 .vp-pill--ghost { background: transparent; color: var(--dim2); border: 1.5px dashed var(--line2); cursor: pointer; transition: color .15s, border-color .15s; }
 .vp-pill--ghost:hover { color: var(--dim); border-color: var(--dim2); }
@@ -135,8 +135,8 @@ body { background: var(--void); color: var(--text); font-family: var(--font-ui);
   border: 1px solid var(--line); color: var(--dim2); display: inline-flex; gap: 6px; align-items: center;
 }
 .vp-cci::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--line2); }
-.vp-cci--live { color: var(--text); border-color: rgba(34,197,94,.35); }
-.vp-cci--live::before { background: var(--ok); box-shadow: 0 0 6px rgba(34,197,94,.7); }
+.vp-cci--live { color: var(--dim); border-color: rgba(34,197,94,.22); }
+.vp-cci--live::before { background: var(--ok); box-shadow: 0 0 4px rgba(34,197,94,.35); }
 
 /* статус-бар */
 .vp-statusbar {
