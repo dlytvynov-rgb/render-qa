@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { SVERKA_CHECKS, DOC_TYPES, docTypeFromName, activeSverka, sverkaRows, sverkaPromptBlock, SVERKA_STATUS } from "./sverka.js";
+import { SVERKA_CHECKS, DOC_TYPES, docTypeFromName, activeSverka, sverkaRows, sverkaPromptBlock, sverkaSinglePrompt, SVERKA_STATUS } from "./sverka.js";
 
 describe("SVERKA_CHECKS", () => {
   it("містить 13 пунктів S1–S13", () => {
@@ -105,6 +105,27 @@ describe("sverkaPromptBlock", () => {
     expect(block).toContain("S10 RCP план → КРЕСЛЕННЯ 1: RCP_final.pdf");
     expect(block).toContain("S2 Студійні стандарти");
     expect(block).toMatch(/no_material.*S1, S3, S5, S6, S7, S8, S9, S12, S13/s);
+  });
+});
+
+describe("sverkaSinglePrompt", () => {
+  const check = SVERKA_CHECKS.find(c => c.id === "S10");
+  it("містить id, label пункта, doc-мітку і zone-правила", () => {
+    const p = sverkaSinglePrompt(check, "RCP · RCP_final.pdf", "стеля 2 рівні", "ZONE-RULES-HERE");
+    expect(p).toContain("S10");
+    expect(p).toContain("RCP план");
+    expect(p).toContain("RCP · RCP_final.pdf");
+    expect(p).toContain("ZONE-RULES-HERE");
+    expect(p).toContain("стеля 2 рівні");
+  });
+  it("вимагає один JSON-обʼєкт зі status і zone", () => {
+    const p = sverkaSinglePrompt(check, "", "", "");
+    expect(p).toMatch(/"status"\s*:/);
+    expect(p).toMatch(/"zone"\s*:/);
+  });
+  it("без документа і ТЗ не падає", () => {
+    expect(() => sverkaSinglePrompt(check, "", "", "")).not.toThrow();
+    expect(typeof sverkaSinglePrompt(check, "", "", "")).toBe("string");
   });
 });
 

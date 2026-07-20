@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { DOC_TYPES, SVERKA_STATUS, docTypeFromName, activeSverka, sverkaRows, sverkaPromptBlock } from "./sverka.js";
+import { DOC_TYPES, SVERKA_CHECKS, SVERKA_STATUS, docTypeFromName, activeSverka, sverkaRows, sverkaPromptBlock, sverkaSinglePrompt } from "./sverka.js";
 
 // ─── SheetJS ──────────────────────────────────────────────────────────────────
 async function loadXLSX() {
@@ -1915,6 +1915,144 @@ function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", n
   );
 }
 
+// ─── Cross-Check Lab — стенд для калібрування одного пункту ───────────────────
+function LabPage({ apiKey }) {
+  const render = useFileList("lab-render");
+  const doc = useFileList("lab-doc");
+  const [checkId, setCheckId] = useState("S1");
+  const [tzText, setTzText] = useState("");
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState(null);
+  const [rawOpen, setRawOpen] = useState(false);
+
+  const check = SVERKA_CHECKS.find(c => c.id === checkId) || SVERKA_CHECKS[0];
+  const rFile = render.files.find(f => f._done && !f._error);
+  const dFile = doc.files.find(f => f._done && !f._error);
+  const docLabel = dFile ? `${DOC_TYPES[dFile._docType] || "Документ"} · ${dFile.filename}` : "";
+
+  const run = useCallback(async () => {
+    if (!apiKey.trim()) { setResult({ error: "Введи Anthropic API ключ у ⚙ справа вгорі" }); return; }
+    if (!rFile) { setResult({ error: "Завантаж рендер" }); return; }
+    setRunning(true); setResult(null);
+    const t0 = Date.now();
+    try {
+      const parts = [{ type: "text", text: sverkaSinglePrompt(check, docLabel, tzText, ZONE_PROMPT) }];
+      parts.push(...filesToParts([rFile], "РЕНДЕР"));
+      if (dFile) parts.push(...filesToParts([dFile], "ДОКУМЕНТ"));
+      const p = await callAPI(parts, 1, apiKey);
+      const obj = (p && p.sverka && p.sverka[0]) || p || {};
+      setResult({ ...obj, zone: obj.zone ? normalizeZone(obj.zone) : null, _ms: Math.round(Date.now() - t0), _raw: p });
+    } catch (e) {
+      setResult({ error: e.message, _ms: Math.round(Date.now() - t0) });
+    }
+    setRunning(false);
+  }, [apiKey, rFile, dFile, docLabel, tzText, check]);
+
+  const cfg = result && !result.error ? (SVERKA_STATUS[result.status] || SVERKA_STATUS.unchecked) : null;
+  const rPrev = rFile?.preview || rFile?.pages?.[0]?.preview;
+  const anns = result && !result.error && result.zone
+    ? [{ ...result, _src: "sverka", _srcIdx: 0, _label: check.id.slice(1), comment: check.label }]
+    : [];
+
+  return (
+    <div>
+      <div style={{ maxWidth: 1180, margin: "0 auto", padding: "9px 32px", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--dim2)", display: "flex", gap: 8, alignItems: "center", borderBottom: "1px solid var(--line)" }}>
+        <span className="vp-label" style={{ color: "#A99EE0" }}>LAB</span>
+        <span>Ізольований стенд — один рендер + один документ + один пункт Cross-Check.</span>
+      </div>
+
+      <div style={{ maxWidth: 1180, margin: "0 auto", padding: "26px 32px", display: "grid", gridTemplateColumns: "1fr 1.15fr", gap: 22, alignItems: "start" }}>
+
+        {/* ЛІВА — вхід */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: "-0.02em" }}>Тест одного пункту</div>
+            <div style={{ fontSize: 12.5, color: "var(--dim2)", marginTop: 5, lineHeight: 1.55 }}>Завантаж рендер і документ, обери пункт — Claude звірить тільки його й покаже вердикт, зону та сирий JSON.</div>
+          </div>
+
+          <UploadBox label="РЕНДЕР" hero files={render.files} onAdd={render.add} onRemove={render.remove} color="#A99EE0" />
+          <UploadBox label="ДОКУМЕНТ ДЛЯ ЗВІРКИ" files={doc.files} onAdd={doc.add} onRemove={doc.remove} onDocType={doc.updateDocType} color="#3FA7C2" note="PDF · зображення · DWG/DXF · Excel" />
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span className="vp-label">Що перевіряємо</span>
+            <select className="vp-input" value={checkId} onChange={e => setCheckId(e.target.value)} style={{ width: "100%", padding: "11px 13px", fontSize: 12 }}>
+              {SVERKA_CHECKS.map(c => <option key={c.id} value={c.id}>{c.id} · {c.label}</option>)}
+            </select>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span className="vp-label">ТЗ-контекст (опційно)</span>
+            <textarea className="vp-input" value={tzText} onChange={e => setTzText(e.target.value)} placeholder="Напр.: стеля — гіпсокартон 2 рівні, 6 вбудованих світильників…" style={{ width: "100%", minHeight: 66, lineHeight: 1.6, resize: "vertical" }} />
+          </div>
+
+          <button className="vp-btn--primary" onClick={run} disabled={running || !rFile} style={{ padding: 15, borderRadius: 11, fontSize: 13, cursor: running || !rFile ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+            {running ? <><span style={{ width: 12, height: 12, border: "1.5px solid rgba(255,255,255,.4)", borderTop: "1.5px solid #fff", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />ПЕРЕВІРЯЮ…</> : "ПЕРЕВІРИТИ ПУНКТ →"}
+          </button>
+        </div>
+
+        {/* ПРАВА — результат */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {!result && !running && (
+            <div className="vp-panel" style={{ padding: "40px 20px", textAlign: "center", color: "var(--dim2)", fontSize: 12.5 }}>
+              Результат зʼявиться тут — вердикт, зона на рендері та сирий JSON.
+            </div>
+          )}
+
+          {result?.error && (
+            <div style={{ padding: "14px 16px", borderRadius: 12, border: "1px solid var(--fail)", background: "rgba(239,68,68,.07)", color: "var(--fail)", fontSize: 12, fontFamily: "var(--font-mono)" }}>
+              ❌ {result.error}
+            </div>
+          )}
+
+          {result && !result.error && (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "16px 18px", borderRadius: 12, border: `1px solid ${cfg.color}55`, background: `${cfg.color}0f` }}>
+                <span style={{ fontSize: 30, lineHeight: 1 }}>{cfg.icon}</span>
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 700 }}>{check.id} · {check.label}</div>
+                  <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--dim)", marginTop: 2 }}>
+                    {docLabel ? `звірено з ${dFile.filename}` : "без документа"} · {(result._ms / 1000).toFixed(1)} c
+                  </div>
+                </div>
+                <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 10, color: cfg.color, border: `1px solid ${cfg.color}66`, padding: "4px 10px", borderRadius: 20 }}>{cfg.label}</span>
+              </div>
+
+              {result.note && (
+                <div className="vp-panel" style={{ padding: "14px 16px" }}>
+                  <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, letterSpacing: "0.12em", color: "var(--dim2)", marginBottom: 6 }}>ВИСНОВОК CLAUDE</div>
+                  <div style={{ fontSize: 13, lineHeight: 1.6 }}>{result.note}</div>
+                </div>
+              )}
+
+              {rPrev && (
+                <div className="vp-panel" style={{ padding: 12 }}>
+                  <AnnotatedImage src={rPrev} anns={anns} visibleIds={new Set(anns.map(a => `${a._src}:${a._srcIdx}`))} hovId={null} />
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 4px 0", fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--dim2)" }}>
+                    <span>{result.zone ? `ЗОНА ${check.id} · x:${result.zone.x} y:${result.zone.y} w:${result.zone.w} h:${result.zone.h}` : "ЗОНА НЕ ВКАЗАНА"}</span>
+                    <span>{anns.length} відмітка</span>
+                  </div>
+                </div>
+              )}
+
+              <div style={{ border: "1px solid var(--line)", borderRadius: 10, overflow: "hidden" }}>
+                <div onClick={() => setRawOpen(o => !o)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 13px", background: "var(--panel2)", cursor: "pointer", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--dim)" }}>
+                  {rawOpen ? "▾" : "▸"} СИРИЙ JSON
+                  <span style={{ marginLeft: "auto", color: "var(--dim2)" }}>{(result._ms / 1000).toFixed(1)} c · sonnet</span>
+                </div>
+                {rawOpen && (
+                  <div style={{ padding: "12px 14px", fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.65, color: "#C9C9D1", whiteSpace: "pre", overflowX: "auto", background: "var(--panel)" }}>
+                    {JSON.stringify(result._raw, null, 2)}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 const SESSION_KEY = "rqa_session";
 function saveSession(data) { try { localStorage.setItem(SESSION_KEY, JSON.stringify(data)); } catch { /* ignore */ } }
@@ -1955,6 +2093,7 @@ export default function App() {
   const saveCustomSlots = slots => { setCustomSlots(slots); try { localStorage.setItem("rqa_custom_slots", JSON.stringify(slots)); } catch { /* ignore */ } };
   const [slotMenuOpen, setSlotMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [view, setView] = useState("app");
 
   // Після конвертації DWG→DXF оновлюємо файл у списку
   const handleDwgConverted = useCallback((fileList, dwgFile, dxfText) => {
@@ -3017,9 +3156,14 @@ ${fileList}
           <span style={{ fontSize: 13, color: "var(--dim)" }}>Перевірка рендерів</span>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", position: "relative" }}>
-          {step === 2 && sel !== null && <button className="vp-btn" onClick={() => setSel(null)}>← {isRev ? "Раунди" : "Ракурси"}</button>}
-          {step === 2 && <button className="vp-btn" onClick={reset}>← Нова перевірка</button>}
-          {step === 2 && perData.some(d => d && !d.error) && <button className="vp-btn" onClick={generateReport} style={{ borderColor: "var(--ok)", color: "var(--ok)" }}>📄 PDF</button>}
+          <div style={{ display: "flex", background: "var(--panel)", border: "1px solid var(--line2)", borderRadius: 9, padding: 2, marginRight: 4 }}>
+            {[{ id: "app", label: "Перевірка" }, { id: "lab", label: "Лабораторія" }].map(v => (
+              <button key={v.id} onClick={() => setView(v.id)} style={{ fontFamily: "var(--font-mono)", fontSize: 11, padding: "6px 14px", border: "none", borderRadius: 7, cursor: "pointer", background: view === v.id ? "var(--panel2)" : "transparent", color: view === v.id ? "var(--text)" : "var(--dim)", boxShadow: view === v.id ? "0 0 0 1px var(--line2)" : "none" }}>{v.label}</button>
+            ))}
+          </div>
+          {view === "app" && step === 2 && sel !== null && <button className="vp-btn" onClick={() => setSel(null)}>← {isRev ? "Раунди" : "Ракурси"}</button>}
+          {view === "app" && step === 2 && <button className="vp-btn" onClick={reset}>← Нова перевірка</button>}
+          {view === "app" && step === 2 && perData.some(d => d && !d.error) && <button className="vp-btn" onClick={generateReport} style={{ borderColor: "var(--ok)", color: "var(--ok)" }}>📄 PDF</button>}
           <button className="vp-btn" onClick={() => setSettingsOpen(o => !o)} title="Ключі та налаштування" style={{ borderColor: anthropicKey ? "var(--ok)" : "var(--warn)" }}>⚙</button>
           {settingsOpen && (
             <div className="vp-panel" style={{ position: "absolute", top: "120%", right: 0, zIndex: 200, padding: 14, display: "flex", flexDirection: "column", gap: 8, width: 300, boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
@@ -3033,7 +3177,9 @@ ${fileList}
         </div>
       </div>
 
-      {step === 1 && savedSession && (
+      {view === "lab" && <LabPage apiKey={anthropicKey} />}
+
+      {view === "app" && step === 1 && savedSession && (
         <div className="vp-panel" style={{ margin: "12px 24px", padding: "10px 16px", display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ fontSize: 13 }}>💾</span>
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -3066,7 +3212,7 @@ ${fileList}
         </div>
       )}
 
-      {step === 1 && tzReview && mode !== "revision" && (
+      {view === "app" && step === 1 && tzReview && mode !== "revision" && (
         <TzReviewStep
           cards={tzCards}
           onRemove={id => setTzCards(prev => prev.filter(c => c.id !== id))}
@@ -3080,7 +3226,7 @@ ${fileList}
           onUseInCheck={mode === "tz-review" ? () => { setMode("first"); } : undefined}
         />
       )}
-      {step === 1 && !tzReview && (
+      {view === "app" && step === 1 && !tzReview && (
         <div style={{ maxWidth: 1100, margin: "0 auto", padding: "30px 32px", display: "flex", flexDirection: "column", gap: 20, boxSizing: "border-box" }}>
           <div>
             <div className="vp-label" style={{ marginBottom: 8, opacity: .75 }}><b style={{ color: "var(--dim)", fontWeight: 500 }}>01 пакет</b> → 02 підтвердження ТЗ → 03 результат</div>
@@ -3213,13 +3359,13 @@ ${fileList}
         </div>
       )}
 
-      {step === 2 && sel === null && consistencyLoading && (
+      {view === "app" && step === 2 && sel === null && consistencyLoading && (
         <div style={{ margin: "0 24px 12px", background: "#fff", border: "1px solid #e8e6e1", borderRadius: 10, padding: "12px 16px", display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ width: 14, height: 14, border: "2px solid #3498db", borderTop: "2px solid transparent", borderRadius: "50%", animation: "spin 0.7s linear infinite", flexShrink: 0 }} />
           <span style={{ fontSize: 11, color: "#888", fontFamily: "monospace" }}>Перевіряю консистентність між ракурсами…</span>
         </div>
       )}
-      {step === 2 && sel === null && consistency && !consistency.error && (
+      {view === "app" && step === 2 && sel === null && consistency && !consistency.error && (
         <div style={{ margin: "0 24px 12px", background: "#fff", border: `1px solid ${consistency.score >= 80 ? "#27ae6033" : consistency.score >= 60 ? "#e67e2233" : "#e74c3c33"}`, borderRadius: 10, overflow: "hidden" }}>
           <div style={{ padding: "8px 14px", background: "#faf9f7", borderBottom: "1px solid #f0eeea", display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 13 }}>🎬</span>
@@ -3239,7 +3385,7 @@ ${fileList}
           {consistency.summary && <div style={{ padding: "6px 14px 10px", fontSize: 11, color: "#777", borderTop: "1px solid #f0eeea" }}>{consistency.summary}</div>}
         </div>
       )}
-      {step === 2 && sel === null && tzClientComments.length > 0 && (
+      {view === "app" && step === 2 && sel === null && tzClientComments.length > 0 && (
         <div style={{ margin: "0 24px 12px", background: "#fff", border: "1px solid #e8e6e1", borderRadius: 10, overflow: "hidden" }}>
           <div style={{ padding: "8px 14px", background: "#faf9f7", borderBottom: "1px solid #f0eeea", display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 13 }}>💬</span>
@@ -3265,8 +3411,8 @@ ${fileList}
           </div>
         </div>
       )}
-      {step === 2 && sel === null && <Grid items={gridItems} perData={perData} statuses={statuses} globalSummary={globalSum} onSelect={setSel} onRetry={mode === "first" ? retryFailed : undefined} mode={mode} />}
-      {step === 2 && sel !== null && detailProps && (
+      {view === "app" && step === 2 && sel === null && <Grid items={gridItems} perData={perData} statuses={statuses} globalSummary={globalSum} onSelect={setSel} onRetry={mode === "first" ? retryFailed : undefined} mode={mode} />}
+      {view === "app" && step === 2 && sel !== null && detailProps && (
         <DetailPage
           renderFiles={detailProps.renderFiles}
           beforeFiles={detailProps.beforeFiles}
@@ -3339,12 +3485,12 @@ ${JSON_SCHEMA}` }];
         />
       )}
 
-      <div className="vp-statusbar">
+      {view === "app" && <div className="vp-statusbar">
         <span>ПАКЕТ: <b style={{ color: "var(--dim)", fontWeight: 500 }}>{pkgCount} файлів</b></span>
         <span style={{ color: "#A99EE0" }}>CROSS-CHECK: {sverkaActiveCount}/{sverkaChecksUi.length}</span>
         <span>КЛЮЧ: <span style={{ color: anthropicKey ? "var(--ok)" : "var(--warn)" }}>●</span> {anthropicKey ? "активний" : "не заданий — ⚙"}</span>
         <span style={{ marginLeft: "auto" }}>CLAUDE SONNET · PROMPT-CACHE ON</span>
-      </div>
+      </div>}
       <style>{`
         @keyframes spin{to{transform:rotate(360deg)}}
         .qa-bg { background: var(--void); }

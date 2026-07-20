@@ -85,6 +85,28 @@ export function sverkaRows(aiSverka, overrides, activeChecks) {
   });
 }
 
+// Фокусний промпт для тест-стенду: звірити ОДИН пункт проти рендера + документа.
+export function sverkaSinglePrompt(check, docLabel, tzText, zoneRules) {
+  const doc = docLabel
+    ? `Документ для звірки: ${docLabel} (позначений як "ДОКУМЕНТ" нижче).`
+    : `Документ не наданий — оціни пункт лише за рендером; якщо без документа перевірити неможливо, постав status "no_material".`;
+  const tz = (tzText || "").trim() ? `\n\nКОНТЕКСТ ТЗ:\n${tzText.trim()}` : "";
+  return `Ти — старший QA-спеціаліст 3D-візуалізації. Перевір РІВНО ОДИН пункт студійного чеклиста.
+
+ПУНКТ ${check.id}: ${check.label}
+${doc}${tz}
+
+${zoneRules || ""}
+
+Звір рендер із документом саме по цьому пункту. Не оцінюй нічого іншого.
+
+ВІДПОВІДАЙ ТІЛЬКИ ОДНИМ JSON-обʼєктом:
+{"id":"${check.id}","status":"ok"|"warn"|"fail"|"no_material","note":"що звірено і з чим, одне-два речення","doc_ref":"назва файлу-джерела або пусто","zone":{"x":0,"y":0,"w":0,"h":0}}
+
+- status: ok = відповідає, warn = дрібне зауваження, fail = не відповідає, no_material = нема чим перевірити.
+- zone ОБОВʼЯЗКОВА для warn/fail — де саме на рендері проблема (відсотки 0–100). Для ok/no_material можна null.`;
+}
+
 export function sverkaPromptBlock(activeChecks, taggedFiles) {
   const files = taggedFiles || [];
   const act = activeChecks.filter(c => c.active);
