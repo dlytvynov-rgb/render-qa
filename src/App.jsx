@@ -2073,10 +2073,6 @@ export default function App() {
   const [consistencyLoading, setConsistencyLoading] = useState(false);
   const [anthropicKey, setAnthropicKey] = useState(() => { try { return localStorage.getItem("anthropic_api_key") || ""; } catch { return ""; } });
   const saveAnthropicKey = k => { setAnthropicKey(k); try { localStorage.setItem("anthropic_api_key", k); } catch { /* ignore */ } };
-  const [archivizerToken, setArchivizerToken] = useState(() => { try { return localStorage.getItem("archivizer_token") || ""; } catch { return ""; } });
-  const saveArchivizerToken = k => { setArchivizerToken(k); try { localStorage.setItem("archivizer_token", k); } catch { /* ignore */ } };
-  const [archivizerUrl, setArchivizerUrl] = useState("");
-  const [archivizerStatus, setArchivizerStatus] = useState(null);
   const [tzCards, setTzCards] = useState([]); // [{id, category, text, source, imgPreview}]
   const [tzAnnotation, setTzAnnotation] = useState("");
   const [tzClientComments, setTzClientComments] = useState([]); // [{page, text}] // розгорнутий опис проекту
@@ -2914,173 +2910,6 @@ ${briefText.trim() || "(дивись прикріплені матеріали)"
     setTzParsing(false); setTzReview(true);
   }
 
-async function loadFromArchivizer() {
-    if (!archivizerToken.trim()) { setArchivizerStatus({ error: "Введіть Archivizer токен" }); return; }
-    if (!archivizerUrl.trim()) { setArchivizerStatus({ error: "Введіть посилання на задачу" }); return; }
-    const match = archivizerUrl.match(/tasks\/([^/?#\s]+)/);
-    if (!match) { setArchivizerStatus({ error: "Невірне посилання. Приклад: https://archivizer.com/tasks/WF8PSTKA" }); return; }
-    const taskId = match[1];
-    const headers = { "Content-Type": "application/json", "Authorization": `Bearer ${archivizerToken.trim()}` };
-    const arcFetch = async (url, body) => {
-      const r = await fetch(url, { method: "POST", headers: { ...headers, "x-real-method": "GET" }, body: JSON.stringify(body) });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      return r.json();
-    };
-    const proxyUrl = u => (u || "").replace("https://static.archivizer.com", "/archivizer-static");
-
-    try {
-      // 2. Повідомлення задачі
-      setArchivizerStatus({ loading: true, msg: "Завантаження повідомлень..." });
-      let messages = [];
-      const msgEndpoints = [
-        ["/archivizer/api/v3/messages", { filters: { task_id: taskId } }],
-        [`/archivizer/api/v3/tasks/${taskId}/messages`, {}],
-      ];
-      for (const [url, body] of msgEndpoints) {
-        try {
-          const msgData = await arcFetch(url, body);
-          const items = msgData.data || msgData || [];
-          if (Array.isArray(items) && items.length >= 0) {
-            messages = items;
-            console.log(`Messages loaded from ${url}:`, messages.length);
-            break;
-          }
-        } catch(e) { console.log(`Messages endpoint ${url} failed: ${e.message}`); }
-      }
-      if (messages.length === 0) console.warn("All message endpoints failed or returned empty");
-
-      // Автозаповнення поля ТЗ — задача + повідомлення
-      const tzLines = [];
-      if (messages.length > 0) {
-        tzLines.push("\nПОВІДОМЛЕННЯ:");
-        messages.forEach(m => {
-          const author = m.user?.name || m.author?.name || m.sender?.name || "?";
-          const text = (m.body || m.text || m.content || "").trim();
-          const time = m.created_at ? new Date(m.created_at).toLocaleDateString("uk") : "";
-          if (text) tzLines.push(`[${time} ${author}]: ${text}`);
-        });
-      }
-      if (tzLines.length > 0) setBriefText(tzLines.join("\n"));
-
-      // 3. Список файлів (з пагінацією)
-      setArchivizerStatus({ loading: true, msg: "Завантаження списку файлів..." });
-      const fetchAllPages = async (endpoint, filters) => {
-        const items = [];
-        let page = 1;
-        while (true) {
-          const data = await arcFetch(endpoint, { filters, page, per_page: 50 });
-          const batch = data.data || (Array.isArray(data) ? data : []);
-          items.push(...batch);
-          console.log(`${endpoint} page ${page}: ${batch.length} items, has_more: ${data.meta?.has_more}`);
-          if (!data.meta?.has_more || batch.length === 0) break;
-          page++;
-          if (page > 20) break; // safety limit
-        }
-        return items;
-      };
-
-      const allFiles = await fetchAllPages("/archivizer/api/v3/file_attachments", { task_id: taskId });
-      console.log("Total files fetched:", allFiles.length);
-      if (!allFiles.length) { setArchivizerStatus({ ok: "Файлів не знайдено" }); return; }
-
-      // 4. Claude аналізує файли (якщо є API ключ)
-      let categories = {}; // index -> "render"|"brief"|"reference"|"drawing"|"skip"
-      if (anthropicKey.trim()) {
-        setArchivizerStatus({ loading: true, msg: "Клод аналізує файли задачі..." });
-        const msgContext = messages.length > 0
-          ? messages.slice(-30).map(m => {
-              const author = m.user?.name || m.author?.name || m.sender?.name || "?";
-              const text = (m.body || m.text || m.content || "").slice(0, 300);
-              const time = m.created_at ? new Date(m.created_at).toLocaleDateString("uk") : "";
-              return `[${time} ${author}]: ${text}`;
-            }).join("\n")
-          : "";
-
-        const fileList = allFiles.map((f, i) =>
-          `${i}: "${f.name}" (${f.size ? Math.round(f.size/1024)+"KB" : "?"}, ${f.content_type || ""})`
-        ).join("\n");
-
-        const prompt = `Ти — QA-асистент для перевірки 3D-рендерів інтер'єрів.
-${msgContext ? `\nПовідомлення в задачі (від клієнта та команди):\n${msgContext}\n` : ""}
-Список файлів задачі:
-${fileList}
-
-Визнач категорію кожного файлу з урахуванням контексту задачі та повідомлень. Відповідай ТІЛЬКИ JSON масивом без пояснень:
-[{"i":0,"cat":"render"}, ...]
-
-Категорії:
-- "render" — фінальний рендер для QA (зображення інтер'єру/кімнати що здається на перевірку)
-- "brief" — ТЗ, бриф, специфікація, таблиця матеріалів, прайс, Excel/CSV, Word, PDF з описом
-- "reference" — референс зображення, мудборд, фото для настрою (не рендер цього проекту)
-- "drawing" — креслення, план, DWG, DXF файл
-- "skip" — архіви, технічні файли, дублікати, непотрібне`;
-        try {
-          const resp = await fetch("https://api.anthropic.com/v1/messages", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true", "x-api-key": anthropicKey.trim() },
-            body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 1000, messages: [{ role: "user", content: prompt }] })
-          });
-          const data = await resp.json();
-          const text = data.content?.[0]?.text || "";
-          const jsonMatch = text.match(/\[[\s\S]*\]/);
-          if (jsonMatch) {
-            try {
-              const parsed = JSON.parse(jsonMatch[0]);
-              parsed.forEach(({ i, cat }) => { if (typeof i === "number" && cat) categories[i] = cat; });
-              console.log("Claude categorization:", categories);
-            } catch (parseErr) {
-              console.warn("Claude categorization: invalid JSON in response:", parseErr.message, text.slice(0, 200));
-            }
-          }
-        } catch(e) { console.warn("Claude categorization failed:", e.message); }
-      }
-
-      // Fallback: якщо Claude не відповів — визначаємо по розширенню
-      const isImageExt = name => /\.(jpe?g|png|webp|gif|bmp|tiff?)$/i.test(name || "");
-      const isDwgExt = name => /\.(dwg|dxf)$/i.test(name || "");
-      const getCategoryFallback = f => {
-        const nm = f.name || "";
-        if (isImageExt(nm)) return "render";
-        if (isDwgExt(nm)) return "drawing";
-        return "brief";
-      };
-
-      // 4. Завантажуємо файли в слоти
-      let counts = { render: 0, brief: 0, reference: 0, drawing: 0, skip: 0 };
-      for (let i = 0; i < allFiles.length; i++) {
-        const f = allFiles[i];
-        const cat = categories[i] || getCategoryFallback(f);
-        if (cat === "skip") { counts.skip++; continue; }
-        const rawUrl = f.file || f.url || f.file_url || f.original_url || f.download_url;
-        if (!rawUrl) continue;
-        const url = proxyUrl(rawUrl);
-        const name = f.name || f.filename || "file";
-        const ct = f.content_type || f.mime_type || "";
-        setArchivizerStatus({ loading: true, msg: `[${cat}] ${name}` });
-        try {
-          const blob = await fetch(url).then(r => r.blob());
-          const file = new File([blob], name, { type: blob.type || ct });
-          if (cat === "render") { renders.add(file); counts.render++; }
-          else if (cat === "reference") { refs.add(file); counts.reference++; }
-          else if (cat === "drawing") { draws.add(file); counts.drawing++; }
-          else { briefs.add(file); counts.brief++; }
-        } catch(e) { console.error(`Failed to download [${cat}] ${name}:`, e); }
-      }
-
-      const summary = [
-        counts.render && `${counts.render} рендерів`,
-        counts.brief && `${counts.brief} брифів`,
-        counts.reference && `${counts.reference} референсів`,
-        counts.drawing && `${counts.drawing} креслень`,
-        counts.skip && `${counts.skip} пропущено`,
-      ].filter(Boolean).join(", ");
-      setArchivizerStatus({ ok: `Завантажено: ${summary}` });
-    } catch (e) {
-      setArchivizerStatus({ error: `Помилка: ${e.message}` });
-    }
-  }
-
-
   function reset() {
     setStep(1); setSel(null); setErr(""); setBriefText("");
     renders.ref.current = []; briefs.ref.current = []; refs.ref.current = []; draws.ref.current = []; customFiles.ref.current = [];
@@ -3169,8 +2998,6 @@ ${fileList}
             <div className="vp-panel" style={{ position: "absolute", top: "120%", right: 0, zIndex: 200, padding: 14, display: "flex", flexDirection: "column", gap: 8, width: 300, boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
               <div className="vp-label">Anthropic API key</div>
               <input type="password" className="vp-input" value={anthropicKey} onChange={e => saveAnthropicKey(e.target.value)} placeholder="sk-ant-…" style={{ width: "100%" }} />
-              <div className="vp-label">Archivizer token</div>
-              <input type="password" className="vp-input" value={archivizerToken} onChange={e => saveArchivizerToken(e.target.value)} placeholder="токен" style={{ width: "100%" }} />
               <div style={{ fontSize: 9, color: "var(--dim)", fontFamily: "var(--font-mono)" }}>Зберігаються локально в браузері</div>
             </div>
           )}
@@ -3270,19 +3097,6 @@ ${fileList}
           )}
           {mode === "first" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              <div className="vp-panel" style={{ borderRadius: 12, padding: "10px 14px", display: "flex", flexDirection: "column", gap: 6 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span className="vp-label" style={{ color: "var(--info)" }}>ARCHIVIZER</span>
-                  {!archivizerToken.trim() && <span style={{ fontSize: 10, color: "var(--warn)", fontFamily: "var(--font-mono)" }}>токен не заданий — додай у ⚙</span>}
-                </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <input type="text" value={archivizerUrl} onChange={e => setArchivizerUrl(e.target.value)} onKeyDown={e => e.key === "Enter" && loadFromArchivizer()} placeholder="https://archivizer.com/tasks/WF8PSTKA" className="vp-input" style={{ flex: 1 }} />
-                  <button onClick={loadFromArchivizer} disabled={archivizerStatus?.loading} style={{ background: archivizerStatus?.loading ? "#333" : "#2980b9", border: "none", color: "#fff", borderRadius: 4, padding: "6px 16px", cursor: archivizerStatus?.loading ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "monospace", whiteSpace: "nowrap" }}>
-                    {archivizerStatus?.loading ? "Завантаження..." : "Завантажити"}
-                  </button>
-                </div>
-                {archivizerStatus && <div style={{ fontSize: 10, fontFamily: "monospace", color: archivizerStatus.error ? "#e74c3c" : archivizerStatus.ok ? "#27ae60" : "#aaa" }}>{archivizerStatus.error || archivizerStatus.ok || archivizerStatus.msg}</div>}
-              </div>
               <UploadBox label="РЕНДЕРИ" hero files={renders.files} onAdd={renders.add} onAddDone={renders.addDone} onRemove={renders.remove} color="#A78BFA" />
               <div>
                 <div className="vp-label" style={{ marginBottom: 5 }}>ТЗ — ТЕКСТ</div>
