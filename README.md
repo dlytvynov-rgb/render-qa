@@ -2,6 +2,8 @@
 
 Інструмент QA для 3D-візуалізації. Завантажуєш пакет від клієнта (бриф, креслення, специфікації, референси) + готові рендери — Claude перевіряє **чи рендер відповідає технічному завданню** і видає по-пунктний вердикт.
 
+> **🌐 Live:** https://dlytvynov-rgb.github.io/render-qa/ — працює прямо в браузері, нічого качати не треба. Введи свій Anthropic API-ключ у ⚙ (зберігається лише локально) і працюй.
+
 > Внутрішній інструмент Archivizer. Мета (з [ROADMAP](ROADMAP.md)): *«ТЗ готове до виробництва, якщо після його прочитання можна почати моделінг без дзвінка клієнту»* — а Render QA замикає цикл, звіряючи фінальний результат із цим ТЗ.
 
 ---
@@ -23,18 +25,20 @@
 ## Архітектура
 
 ```
-React UI (src/App.jsx, ~3100 рядків)
+React UI (src/App.jsx) — повністю клієнтський, без бекенда
    ├─ парсинг файлів у браузері:
    │    PDF → pdf.js (рендер сторінок у JPEG)
    │    XLSX → SheetJS · DOCX/RTF → текст · DWG/DXF → entities
    ├─ fetch напряму → https://api.anthropic.com  (Claude Sonnet, ключ вводить юзер)
-   └─ Archivizer API (обхід CORS): dev — Vite proxy (vite.config.js), desktop — Express в electron/main.js
+   └─ збірка singlefile → один index.html (vite-plugin-singlefile)
         ▲
-   Electron-обгортка (desktop .exe) — electron/ + start.bat
+   Electron-обгортка (desktop .exe, опціонально) — electron/ + start.bat
 ```
 
+- **Без сервера.** Уся логіка в браузері → деплоїться як статика (GitHub Pages, будь-який CDN)
 - Claude викликається **прямо з браузера** (`anthropic-dangerous-direct-browser-access`), з prompt-caching
-- API-ключ Anthropic вводиться в UI (не зашитий у код)
+- API-ключ Anthropic вводиться в UI (не зашитий у код, лежить лише в localStorage юзера)
+- Пуш у `main` → GitHub Actions ([deploy-pages.yml](.github/workflows/deploy-pages.yml)) білдить і публікує на Pages автоматично
 
 ---
 
@@ -48,7 +52,7 @@ React UI (src/App.jsx, ~3100 рядків)
 | PDF | pdf.js (CDN, lazy) |
 | Excel | SheetJS (CDN, lazy) |
 | DWG/DXF | парсер entities у `App.jsx` |
-| Proxy (Archivizer API) | Vite dev-proxy (web) · Express + http-proxy-middleware в `electron/main.js` (desktop) |
+| Хостинг | GitHub Pages (статика, `deploy-pages.yml`) · опц. Electron .exe |
 
 ---
 
@@ -56,13 +60,16 @@ React UI (src/App.jsx, ~3100 рядків)
 
 ```bash
 npm install
-npm run dev        # Vite dev-сервер (UI + проксі до Archivizer API)
-# або десктоп:
+npm run dev        # Vite dev-сервер (UI)
+npm run test       # vitest (логіка Cross-Check)
+npm run build      # статична збірка → dist/index.html
+npm run preview    # локальний перегляд збірки
+# опційно десктоп:
 npm run electron   # Electron у dev
 npm run dist       # зібрати .exe → release/
 ```
 
-Anthropic API-ключ вводиться у самому інтерфейсі (поле «Anthropic API key»).
+Anthropic API-ключ вводиться у самому інтерфейсі (⚙ у хедері). Деплой на Pages — автоматичний при пуші в `main`.
 
 ---
 
@@ -71,7 +78,8 @@ Anthropic API-ключ вводиться у самому інтерфейсі (
 ```
 render-qa/
 ├── src/App.jsx        # ★ вся логіка: парсинг файлів, зони, виклик Claude, вердикти
-├── electron/          # десктопна обгортка (main.js містить Express-проксі до Archivizer)
+├── electron/          # десктопна обгортка (опціональна .exe/.dmg)
+├── .github/workflows/ # deploy-pages.yml (Pages) · build.yml (Electron, ручний)
 ├── start.bat          # швидкий запуск на Windows
 ├── ROADMAP.md         # 8-етапний pipeline обробки ТЗ
 ├── presentation.html · roadmap-presentation.html
