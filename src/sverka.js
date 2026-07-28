@@ -107,6 +107,35 @@ ${zoneRules || ""}
 - zone ОБОВʼЯЗКОВА для warn/fail — де саме на рендері проблема (відсотки 0–100). Для ok/no_material можна null.`;
 }
 
+// Пункти, що вимагають порівняння ДО/ПІСЛЯ (два рендери) замість одного.
+export const SVERKA_COMPARE_IDS = ["S13"];
+export function sverkaIsComparison(checkId) {
+  return SVERKA_COMPARE_IDS.includes(checkId);
+}
+
+// Фокусний промпт для порівняння ДО/ПІСЛЯ проти списку правок (напр. Ту-ду лист S13).
+export function sverkaSingleComparePrompt(check, changeList, zoneRules) {
+  const changes = (changeList || "").trim()
+    ? `СПИСОК ЗМІН / ПРАВОК (кожен пункт має бути застосований між ДО і ПІСЛЯ):\n${changeList.trim()}`
+    : `Список змін не наданий — порівняй ДО і ПІСЛЯ візуально і знайди всі відмінності.`;
+  return `Ти — старший QA-спеціаліст 3D-візуалізації. Перевіряєш пункт ${check.id}: ${check.label} — ПОРІВНЯННЯМ двох рендерів.
+
+Зображення 1 = РЕНДЕР ДО (до правок).
+Зображення 2 = РЕНДЕР ПІСЛЯ (після правок).
+
+${changes}
+
+${zoneRules || ""}
+
+Звір ПІСЛЯ проти ДО по кожному пункту зі списку змін. Для кожної правки визнач: застосована / застосована частково / не застосована / стало гірше (регресія). Не оцінюй нічого поза списком змін.
+
+ВІДПОВІДАЙ ТІЛЬКИ ОДНИМ JSON-обʼєктом:
+{"id":"${check.id}","status":"ok"|"warn"|"fail","note":"стисло по кожній правці — що зроблено/не зроблено","zone":{"x":0,"y":0,"w":0,"h":0},"changes":[{"text":"текст правки","done":"yes"|"partial"|"no"|"regressed"}]}
+
+- status: ok = всі правки застосовані; warn = частково; fail = ключові не застосовані або регресія.
+- zone — на зображенні ПІСЛЯ, де найважливіша незастосована/проблемна правка (для warn/fail). Для ok можна null.`;
+}
+
 export function sverkaPromptBlock(activeChecks, taggedFiles) {
   const files = taggedFiles || [];
   const act = activeChecks.filter(c => c.active);

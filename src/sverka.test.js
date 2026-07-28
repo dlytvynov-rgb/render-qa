@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { SVERKA_CHECKS, DOC_TYPES, docTypeFromName, activeSverka, sverkaRows, sverkaPromptBlock, sverkaSinglePrompt, SVERKA_STATUS } from "./sverka.js";
+import { SVERKA_CHECKS, DOC_TYPES, docTypeFromName, activeSverka, sverkaRows, sverkaPromptBlock, sverkaSinglePrompt, sverkaIsComparison, sverkaSingleComparePrompt, SVERKA_STATUS } from "./sverka.js";
 
 describe("SVERKA_CHECKS", () => {
   it("містить 13 пунктів S1–S13", () => {
@@ -126,6 +126,35 @@ describe("sverkaSinglePrompt", () => {
   it("без документа і ТЗ не падає", () => {
     expect(() => sverkaSinglePrompt(check, "", "", "")).not.toThrow();
     expect(typeof sverkaSinglePrompt(check, "", "", "")).toBe("string");
+  });
+});
+
+describe("sverkaIsComparison", () => {
+  it("S13 — порівняння ДО/ПІСЛЯ, решта — ні", () => {
+    expect(sverkaIsComparison("S13")).toBe(true);
+    expect(sverkaIsComparison("S10")).toBe(false);
+    expect(sverkaIsComparison("S1")).toBe(false);
+  });
+});
+
+describe("sverkaSingleComparePrompt", () => {
+  const check = SVERKA_CHECKS.find(c => c.id === "S13");
+  it("містить ДО/ПІСЛЯ, список змін, id пункта і zone-правила", () => {
+    const p = sverkaSingleComparePrompt(check, "Прибрати зайвий стілець зліва", "ZONE-RULES");
+    expect(p).toContain("ДО");
+    expect(p).toContain("ПІСЛЯ");
+    expect(p).toContain("Прибрати зайвий стілець зліва");
+    expect(p).toContain("S13");
+    expect(p).toContain("ZONE-RULES");
+  });
+  it("вимагає JSON зі status і масивом changes", () => {
+    const p = sverkaSingleComparePrompt(check, "", "");
+    expect(p).toMatch(/"status"\s*:/);
+    expect(p).toMatch(/"changes"\s*:/);
+  });
+  it("без списку змін не падає", () => {
+    expect(() => sverkaSingleComparePrompt(check, "", "")).not.toThrow();
+    expect(typeof sverkaSingleComparePrompt(check, "", "")).toBe("string");
   });
 });
 

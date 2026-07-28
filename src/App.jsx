@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { DOC_TYPES, SVERKA_CHECKS, SVERKA_STATUS, docTypeFromName, activeSverka, sverkaRows, sverkaPromptBlock, sverkaSinglePrompt } from "./sverka.js";
+import { DOC_TYPES, SVERKA_CHECKS, SVERKA_STATUS, docTypeFromName, activeSverka, sverkaRows, sverkaPromptBlock, sverkaSinglePrompt, sverkaIsComparison, sverkaSingleComparePrompt } from "./sverka.js";
 
 // ─── SheetJS ──────────────────────────────────────────────────────────────────
 async function loadXLSX() {
@@ -1918,6 +1918,7 @@ function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", n
 // ─── Cross-Check Lab — стенд для калібрування одного пункту ───────────────────
 function LabPage({ apiKey }) {
   const render = useFileList("lab-render");
+  const after = useFileList("lab-after");
   const doc = useFileList("lab-doc");
   const [checkId, setCheckId] = useState("S1");
   const [tzText, setTzText] = useState("");
@@ -1926,19 +1927,30 @@ function LabPage({ apiKey }) {
   const [rawOpen, setRawOpen] = useState(false);
 
   const check = SVERKA_CHECKS.find(c => c.id === checkId) || SVERKA_CHECKS[0];
+  const isCompare = sverkaIsComparison(checkId);
   const rFile = render.files.find(f => f._done && !f._error);
+  const aFile = after.files.find(f => f._done && !f._error);
   const dFile = doc.files.find(f => f._done && !f._error);
   const docLabel = dFile ? `${DOC_TYPES[dFile._docType] || "Документ"} · ${dFile.filename}` : "";
+  const canRun = isCompare ? (rFile && aFile) : rFile;
 
   const run = useCallback(async () => {
     if (!apiKey.trim()) { setResult({ error: "Введи Anthropic API ключ у ⚙ справа вгорі" }); return; }
-    if (!rFile) { setResult({ error: "Завантаж рендер" }); return; }
+    if (isCompare && (!rFile || !aFile)) { setResult({ error: "Завантаж обидва рендери — ДО і ПІСЛЯ" }); return; }
+    if (!isCompare && !rFile) { setResult({ error: "Завантаж рендер" }); return; }
     setRunning(true); setResult(null);
     const t0 = Date.now();
     try {
-      const parts = [{ type: "text", text: sverkaSinglePrompt(check, docLabel, tzText, ZONE_PROMPT) }];
-      parts.push(...filesToParts([rFile], "РЕНДЕР"));
-      if (dFile) parts.push(...filesToParts([dFile], "ДОКУМЕНТ"));
+      let parts;
+      if (isCompare) {
+        parts = [{ type: "text", text: sverkaSingleComparePrompt(check, tzText, ZONE_PROMPT) }];
+        parts.push(...filesToParts([rFile], "РЕНДЕР ДО"));
+        parts.push(...filesToParts([aFile], "РЕНДЕР ПІСЛЯ"));
+      } else {
+        parts = [{ type: "text", text: sverkaSinglePrompt(check, docLabel, tzText, ZONE_PROMPT) }];
+        parts.push(...filesToParts([rFile], "РЕНДЕР"));
+        if (dFile) parts.push(...filesToParts([dFile], "ДОКУМЕНТ"));
+      }
       const p = await callAPI(parts, 1, apiKey);
       const obj = (p && p.sverka && p.sverka[0]) || p || {};
       setResult({ ...obj, zone: obj.zone ? normalizeZone(obj.zone) : null, _ms: Math.round(Date.now() - t0), _raw: p });
@@ -1946,10 +1958,14 @@ function LabPage({ apiKey }) {
       setResult({ error: e.message, _ms: Math.round(Date.now() - t0) });
     }
     setRunning(false);
-  }, [apiKey, rFile, dFile, docLabel, tzText, check]);
+  }, [apiKey, isCompare, rFile, aFile, dFile, docLabel, tzText, check]);
 
   const cfg = result && !result.error ? (SVERKA_STATUS[result.status] || SVERKA_STATUS.unchecked) : null;
-  const rPrev = rFile?.preview || rFile?.pages?.[0]?.preview;
+  // зона малюється на ПІСЛЯ (для порівняння) або на єдиному рендері
+  const rPrev = isCompare
+    ? (aFile?.preview || aFile?.pages?.[0]?.preview)
+    : (rFile?.preview || rFile?.pages?.[0]?.preview);
+  const DONE_CFG = { yes: { icon: "✅", color: "var(--ok)" }, partial: { icon: "⚠️", color: "var(--warn)" }, no: { icon: "❌", color: "var(--fail)" }, regressed: { icon: "🔻", color: "var(--fail)" } };
   const anns = result && !result.error && result.zone
     ? [{ ...result, _src: "sverka", _srcIdx: 0, _label: check.id.slice(1), comment: check.label }]
     : [];
@@ -1958,7 +1974,7 @@ function LabPage({ apiKey }) {
     <div>
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "9px 32px", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--dim2)", display: "flex", gap: 8, alignItems: "center", borderBottom: "1px solid var(--line)" }}>
         <span className="vp-label" style={{ color: "#A99EE0" }}>LAB</span>
-        <span>Ізольований стенд — один рендер + один документ + один пункт Cross-Check.</span>
+        <span>Ізольований стенд для одного пункту Cross-Check. Для «Ту-ду лист» — порівняння ДО/ПІСЛЯ зі списком правок.</span>
       </div>
 
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "26px 32px", display: "grid", gridTemplateColumns: "1fr 1.15fr", gap: 22, alignItems: "start" }}>
@@ -1966,27 +1982,36 @@ function LabPage({ apiKey }) {
         {/* ЛІВА — вхід */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <div>
-            <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: "-0.02em" }}>Тест одного пункту</div>
-            <div style={{ fontSize: 12.5, color: "var(--dim2)", marginTop: 5, lineHeight: 1.55 }}>Завантаж рендер і документ, обери пункт — Claude звірить тільки його й покаже вердикт, зону та сирий JSON.</div>
+            <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: "-0.02em" }}>{isCompare ? "Порівняння ДО / ПІСЛЯ" : "Тест одного пункту"}</div>
+            <div style={{ fontSize: 12.5, color: "var(--dim2)", marginTop: 5, lineHeight: 1.55 }}>{isCompare ? "Завантаж два рендери — до і після правок — і список змін. Claude звірить, чи кожну правку застосовано." : "Завантаж рендер і документ, обери пункт — Claude звірить тільки його й покаже вердикт, зону та сирий JSON."}</div>
           </div>
-
-          <UploadBox label="РЕНДЕР" hero files={render.files} onAdd={render.add} onRemove={render.remove} color="#A99EE0" />
-          <UploadBox label="ДОКУМЕНТ ДЛЯ ЗВІРКИ" files={doc.files} onAdd={doc.add} onRemove={doc.remove} onDocType={doc.updateDocType} color="#3FA7C2" note="PDF · зображення · DWG/DXF · Excel" />
 
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <span className="vp-label">Що перевіряємо</span>
             <select className="vp-input" value={checkId} onChange={e => setCheckId(e.target.value)} style={{ width: "100%", padding: "11px 13px", fontSize: 12 }}>
-              {SVERKA_CHECKS.map(c => <option key={c.id} value={c.id}>{c.id} · {c.label}</option>)}
+              {SVERKA_CHECKS.map(c => <option key={c.id} value={c.id}>{c.id} · {c.label}{sverkaIsComparison(c.id) ? " (ДО/ПІСЛЯ)" : ""}</option>)}
             </select>
           </div>
 
+          {isCompare ? (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <UploadBox label="РЕНДЕР — ДО" files={render.files} onAdd={render.add} onRemove={render.remove} color="#71717A" />
+              <UploadBox label="РЕНДЕР — ПІСЛЯ" files={after.files} onAdd={after.add} onRemove={after.remove} color="#A99EE0" />
+            </div>
+          ) : (
+            <>
+              <UploadBox label="РЕНДЕР" hero files={render.files} onAdd={render.add} onRemove={render.remove} color="#A99EE0" />
+              <UploadBox label="ДОКУМЕНТ ДЛЯ ЗВІРКИ" files={doc.files} onAdd={doc.add} onRemove={doc.remove} onDocType={doc.updateDocType} color="#3FA7C2" note="PDF · зображення · DWG/DXF · Excel" />
+            </>
+          )}
+
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span className="vp-label">ТЗ-контекст (опційно)</span>
-            <textarea className="vp-input" value={tzText} onChange={e => setTzText(e.target.value)} placeholder="Напр.: стеля — гіпсокартон 2 рівні, 6 вбудованих світильників…" style={{ width: "100%", minHeight: 66, lineHeight: 1.6, resize: "vertical" }} />
+            <span className="vp-label">{isCompare ? "Список змін (правки)" : "ТЗ-контекст (опційно)"}</span>
+            <textarea className="vp-input" value={tzText} onChange={e => setTzText(e.target.value)} placeholder={isCompare ? "• Прибрати зайвий стілець зліва\n• Замінити колір дивана на сірий\n• Додати світильник над столом" : "Напр.: стеля — гіпсокартон 2 рівні, 6 вбудованих світильників…"} style={{ width: "100%", minHeight: isCompare ? 90 : 66, lineHeight: 1.6, resize: "vertical" }} />
           </div>
 
-          <button className="vp-btn--primary" onClick={run} disabled={running || !rFile} style={{ padding: 15, borderRadius: 11, fontSize: 13, cursor: running || !rFile ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-            {running ? <><span style={{ width: 12, height: 12, border: "1.5px solid rgba(255,255,255,.4)", borderTop: "1.5px solid #fff", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />ПЕРЕВІРЯЮ…</> : "ПЕРЕВІРИТИ ПУНКТ →"}
+          <button className="vp-btn--primary" onClick={run} disabled={running || !canRun} style={{ padding: 15, borderRadius: 11, fontSize: 13, cursor: running || !canRun ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+            {running ? <><span style={{ width: 12, height: 12, border: "1.5px solid rgba(255,255,255,.4)", borderTop: "1.5px solid #fff", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />ПЕРЕВІРЯЮ…</> : isCompare ? "ПОРІВНЯТИ ПРАВКИ →" : "ПЕРЕВІРИТИ ПУНКТ →"}
           </button>
         </div>
 
@@ -2011,7 +2036,7 @@ function LabPage({ apiKey }) {
                 <div>
                   <div style={{ fontSize: 16, fontWeight: 700 }}>{check.id} · {check.label}</div>
                   <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--dim)", marginTop: 2 }}>
-                    {docLabel ? `звірено з ${dFile.filename}` : "без документа"} · {(result._ms / 1000).toFixed(1)} c
+                    {isCompare ? "ДО → ПІСЛЯ" : docLabel ? `звірено з ${dFile.filename}` : "без документа"} · {(result._ms / 1000).toFixed(1)} c
                   </div>
                 </div>
                 <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 10, color: cfg.color, border: `1px solid ${cfg.color}66`, padding: "4px 10px", borderRadius: 20 }}>{cfg.label}</span>
@@ -2021,6 +2046,21 @@ function LabPage({ apiKey }) {
                 <div className="vp-panel" style={{ padding: "14px 16px" }}>
                   <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, letterSpacing: "0.12em", color: "var(--dim2)", marginBottom: 6 }}>ВИСНОВОК CLAUDE</div>
                   <div style={{ fontSize: 13, lineHeight: 1.6 }}>{result.note}</div>
+                </div>
+              )}
+
+              {Array.isArray(result.changes) && result.changes.length > 0 && (
+                <div className="vp-panel" style={{ overflow: "hidden" }}>
+                  <div style={{ padding: "10px 16px", borderBottom: "1px solid var(--line)", fontFamily: "var(--font-mono)", fontSize: 9, letterSpacing: "0.12em", color: "var(--dim2)" }}>ПРАВКИ ({result.changes.filter(c => c.done === "yes").length}/{result.changes.length})</div>
+                  {result.changes.map((c, i) => {
+                    const dc = DONE_CFG[c.done] || DONE_CFG.no;
+                    return (
+                      <div key={i} style={{ padding: "9px 16px", borderBottom: "1px solid var(--line)", display: "flex", gap: 10, alignItems: "flex-start" }}>
+                        <span style={{ fontSize: 13, lineHeight: 1.3, flexShrink: 0 }}>{dc.icon}</span>
+                        <span style={{ fontSize: 12.5, lineHeight: 1.5, color: c.done === "yes" ? "var(--dim)" : "var(--text)", textDecoration: c.done === "yes" ? "line-through" : "none" }}>{c.text}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
 
