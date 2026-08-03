@@ -1981,7 +1981,7 @@ function LabPage({ apiKey, lockCheckId }) {
     const cls = aiPositive ? (correct ? "TP" : "FP") : (correct ? "TN" : "FN");
     setLog(prev => {
       const next = prev.filter(e => e.caseId !== caseId);
-      next.push({ caseId, ts: new Date().toISOString(), change: change.text, done: change.done, aiPositive, correct, cls });
+      next.push({ caseId, ts: new Date().toISOString(), checkId: check.id, change: change.text, done: change.done, aiPositive, correct, cls });
       saveTestLog(next); return next;
     });
   };
@@ -2067,35 +2067,6 @@ function LabPage({ apiKey, lockCheckId }) {
 
         {/* ПРАВА — результат */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {isCompare && (
-            <div className="vp-panel" style={{ padding: 14 }}>
-              <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
-                <span className="vp-label">Матриця тесту</span>
-                <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--dim2)" }}>{total} кейсів</span>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 10 }}>
-                {[["TP", "вірно флагнув", "var(--ok)"], ["FP", "хибна тривога", "var(--fail)"], ["FN", "пропустив", "var(--fail)"], ["TN", "вірно пропустив", "var(--ok)"]].map(([k, lbl, col]) => (
-                  <div key={k} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "8px 10px" }}>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700, color: col }}>{k}</span>
-                      <span style={{ fontSize: 18, fontWeight: 700 }}>{M[k]}</span>
-                    </div>
-                    <div style={{ fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--dim2)" }}>{lbl}</div>
-                  </div>
-                ))}
-              </div>
-              <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--dim)", marginBottom: 10 }}>
-                <span>Precision <b style={{ color: "var(--text)" }}>{pct(prec)}</b></span>
-                <span>Recall <b style={{ color: "var(--text)" }}>{pct(rec)}</b></span>
-                <span>Accuracy <b style={{ color: "var(--text)" }}>{pct(acc)}</b></span>
-                <span>F1 <b style={{ color: "var(--text)" }}>{pct(f1)}</b></span>
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button className="vp-btn" onClick={exportXlsx} disabled={!total} style={{ borderColor: total ? "var(--ok)" : "var(--line2)", color: total ? "var(--ok)" : "var(--dim2)" }}>⬇ Excel ({total})</button>
-                <button className="vp-btn" onClick={resetLog} disabled={!total}>Скинути лог</button>
-              </div>
-            </div>
-          )}
           {!result && !running && (
             <div className="vp-panel" style={{ padding: "40px 20px", textAlign: "center", color: "var(--dim2)", fontSize: 12.5 }}>
               Результат зʼявиться тут — вердикт, зона на рендері та сирий JSON.
@@ -2130,7 +2101,18 @@ function LabPage({ apiKey, lockCheckId }) {
 
               {Array.isArray(result.changes) && result.changes.length > 0 && (
                 <div className="vp-panel" style={{ overflow: "hidden" }}>
-                  <div style={{ padding: "10px 16px", borderBottom: "1px solid var(--line)", fontFamily: "var(--font-mono)", fontSize: 9, letterSpacing: "0.12em", color: "var(--dim2)" }}>ПРАВКИ ({result.changes.filter(c => c.done === "yes").length}/{result.changes.length})</div>
+                  <div style={{ padding: "10px 16px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, letterSpacing: "0.12em", color: "var(--dim2)" }}>ПРАВКИ ({result.changes.length})</span>
+                    {total > 0 && (
+                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--dim)" }}>
+                        <b style={{ color: "var(--ok)" }}>TP {M.TP}</b> · <b style={{ color: "var(--fail)" }}>FP {M.FP}</b> · <b style={{ color: "var(--fail)" }}>FN {M.FN}</b> · <b style={{ color: "var(--ok)" }}>TN {M.TN}</b> · F1 {pct(f1)}
+                      </span>
+                    )}
+                    <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                      <button className="vp-btn" onClick={exportXlsx} disabled={!total} style={{ padding: "3px 9px", fontSize: 9, borderColor: total ? "var(--ok)" : "var(--line2)", color: total ? "var(--ok)" : "var(--dim2)" }}>⬇ xlsx ({total})</button>
+                      <button className="vp-btn" onClick={resetLog} disabled={!total} style={{ padding: "3px 9px", fontSize: 9 }} title="Скинути лог">↺</button>
+                    </span>
+                  </div>
                   {result.changes.map((c, i) => {
                     const dc = DONE_CFG[c.done] || DONE_CFG.no;
                     const ev = evalOf(result._runId, i);
