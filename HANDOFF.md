@@ -175,6 +175,8 @@ State in `App()`: `view ∈ "app" | "lab"`, and within `"app"`: `mode ∈ "tz-re
 - **revision** — before/after pairs (round comparison): did the requested fixes get applied.
 - **Lab** (`view="lab"`, `LabPage` component) — an isolated bench to calibrate ONE Cross-Check point: one render + one document + a check selector → verdict + zone + raw JSON. For the "to-do" check it switches to **ДО/ПІСЛЯ + change list** comparison. This is where you tune per-check prompt wording.
 
+> **⚠️ TEST MODE (currently ON):** the module-level flag `const TODO_TEST_ONLY = true;` in `App.jsx` locks the whole app to the to-do (S13) before/after test bench — the view toggle and check selector are hidden so testers can't click anything else. The Lab shows a **TP/FP/FN/TN confusion matrix** (positive = AI flagged a change as not-done; the tester marks each verdict correct/incorrect; TP/FP/TN/FN + precision/recall/accuracy/F1 are derived) with **Excel export** (SheetJS, client-side) and a persistent log in `localStorage` (`rqa_todo_testlog`). **Set `TODO_TEST_ONLY = false` to restore the full app** (all modes + all 13 checks).
+
 ---
 
 ## 7. Key prompt constants (all in `App.jsx`)

@@ -1916,11 +1916,17 @@ function UploadBox({ label, files, onAdd, onAddDone, onRemove, color = "#888", n
 }
 
 // ─── Cross-Check Lab — стенд для калібрування одного пункту ───────────────────
-function LabPage({ apiKey }) {
+// ── Тест-режим: показати ТІЛЬКИ перевірку по ту-ду (S13) ──
+const TODO_TEST_ONLY = true;
+const TESTLOG_KEY = "rqa_todo_testlog";
+function loadTestLog() { try { return JSON.parse(localStorage.getItem(TESTLOG_KEY)) || []; } catch { return []; } }
+function saveTestLog(log) { try { localStorage.setItem(TESTLOG_KEY, JSON.stringify(log)); } catch { /* ignore */ } }
+
+function LabPage({ apiKey, lockCheckId }) {
   const render = useFileList("lab-render");
   const after = useFileList("lab-after");
   const doc = useFileList("lab-doc");
-  const [checkId, setCheckId] = useState("S1");
+  const [checkId, setCheckId] = useState(lockCheckId || "S1");
   const [tzText, setTzText] = useState("");
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
@@ -1953,7 +1959,7 @@ function LabPage({ apiKey }) {
       }
       const p = await callAPI(parts, 1, apiKey);
       const obj = (p && p.sverka && p.sverka[0]) || p || {};
-      setResult({ ...obj, zone: obj.zone ? normalizeZone(obj.zone) : null, _ms: Math.round(Date.now() - t0), _raw: p });
+      setResult({ ...obj, zone: obj.zone ? normalizeZone(obj.zone) : null, _ms: Math.round(Date.now() - t0), _runId: t0, _raw: p });
     } catch (e) {
       setResult({ error: e.message, _ms: Math.round(Date.now() - t0) });
     }
@@ -1966,6 +1972,48 @@ function LabPage({ apiKey }) {
     ? (aFile?.preview || aFile?.pages?.[0]?.preview)
     : (rFile?.preview || rFile?.pages?.[0]?.preview);
   const DONE_CFG = { yes: { icon: "✅", color: "var(--ok)" }, partial: { icon: "⚠️", color: "var(--warn)" }, no: { icon: "❌", color: "var(--fail)" }, regressed: { icon: "🔻", color: "var(--fail)" } };
+
+  // ── Тест-лог + матриця TP/FP/FN/TN ──
+  const [log, setLog] = useState(loadTestLog);
+  const recordEval = (runId, idx, change, correct) => {
+    const caseId = `${runId}:${idx}`;
+    const aiPositive = change.done !== "yes"; // AI флагнув проблему
+    const cls = aiPositive ? (correct ? "TP" : "FP") : (correct ? "TN" : "FN");
+    setLog(prev => {
+      const next = prev.filter(e => e.caseId !== caseId);
+      next.push({ caseId, ts: new Date().toISOString(), change: change.text, done: change.done, aiPositive, correct, cls });
+      saveTestLog(next); return next;
+    });
+  };
+  const evalOf = (runId, idx) => log.find(e => e.caseId === `${runId}:${idx}`);
+  const resetLog = () => { setLog([]); saveTestLog([]); };
+  const M = { TP: 0, FP: 0, TN: 0, FN: 0 };
+  log.forEach(e => { if (M[e.cls] != null) M[e.cls]++; });
+  const total = log.length;
+  const prec = (M.TP + M.FP) ? M.TP / (M.TP + M.FP) : null;
+  const rec = (M.TP + M.FN) ? M.TP / (M.TP + M.FN) : null;
+  const acc = total ? (M.TP + M.TN) / total : null;
+  const f1 = (prec != null && rec != null && (prec + rec) > 0) ? 2 * prec * rec / (prec + rec) : null;
+  const pct = v => v == null ? "—" : `${Math.round(v * 100)}%`;
+  const exportXlsx = async () => {
+    const XLSX = await loadXLSX();
+    const cases = log.map((e, i) => ({ "#": i + 1, "Час": e.ts, "Правка": e.change, "AI виконано?": e.done, "AI флагнув проблему": e.aiPositive ? "так" : "ні", "AI правий?": e.correct ? "так" : "ні", "Клас": e.cls }));
+    const summary = [
+      { "Метрика": "TP — вірно флагнув", "Значення": M.TP },
+      { "Метрика": "FP — хибна тривога", "Значення": M.FP },
+      { "Метрика": "FN — пропустив", "Значення": M.FN },
+      { "Метрика": "TN — вірно пропустив", "Значення": M.TN },
+      { "Метрика": "Всього кейсів", "Значення": total },
+      { "Метрика": "Precision", "Значення": pct(prec) },
+      { "Метрика": "Recall", "Значення": pct(rec) },
+      { "Метрика": "Accuracy", "Значення": pct(acc) },
+      { "Метрика": "F1", "Значення": pct(f1) },
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(cases.length ? cases : [{ "#": "" }]), "Кейси");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summary), "Матриця");
+    XLSX.writeFile(wb, `render-qa-todo-test_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
   const anns = result && !result.error && result.zone
     ? [{ ...result, _src: "sverka", _srcIdx: 0, _label: check.id.slice(1), comment: check.label }]
     : [];
@@ -1974,7 +2022,7 @@ function LabPage({ apiKey }) {
     <div>
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "9px 32px", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--dim2)", display: "flex", gap: 8, alignItems: "center", borderBottom: "1px solid var(--line)" }}>
         <span className="vp-label" style={{ color: "#A99EE0" }}>LAB</span>
-        <span>Ізольований стенд для одного пункту Cross-Check. Для «Ту-ду лист» — порівняння ДО/ПІСЛЯ зі списком правок.</span>
+        <span>{lockCheckId ? "Тест перевірки по ту-ду листу: завантаж ДО/ПІСЛЯ + список правок, оціни вердикти AI — матриця й Excel праворуч." : "Ізольований стенд для одного пункту Cross-Check. Для «Ту-ду лист» — порівняння ДО/ПІСЛЯ зі списком правок."}</span>
       </div>
 
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "26px 32px", display: "grid", gridTemplateColumns: "1fr 1.15fr", gap: 22, alignItems: "start" }}>
@@ -1986,12 +2034,14 @@ function LabPage({ apiKey }) {
             <div style={{ fontSize: 12.5, color: "var(--dim2)", marginTop: 5, lineHeight: 1.55 }}>{isCompare ? "Завантаж два рендери — до і після правок — і список змін. Claude звірить, чи кожну правку застосовано." : "Завантаж рендер і документ, обери пункт — Claude звірить тільки його й покаже вердикт, зону та сирий JSON."}</div>
           </div>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span className="vp-label">Що перевіряємо</span>
-            <select className="vp-input" value={checkId} onChange={e => setCheckId(e.target.value)} style={{ width: "100%", padding: "11px 13px", fontSize: 12 }}>
-              {SVERKA_CHECKS.map(c => <option key={c.id} value={c.id}>{c.id} · {c.label}{sverkaIsComparison(c.id) ? " (ДО/ПІСЛЯ)" : ""}</option>)}
-            </select>
-          </div>
+          {!lockCheckId && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <span className="vp-label">Що перевіряємо</span>
+              <select className="vp-input" value={checkId} onChange={e => setCheckId(e.target.value)} style={{ width: "100%", padding: "11px 13px", fontSize: 12 }}>
+                {SVERKA_CHECKS.map(c => <option key={c.id} value={c.id}>{c.id} · {c.label}{sverkaIsComparison(c.id) ? " (ДО/ПІСЛЯ)" : ""}</option>)}
+              </select>
+            </div>
+          )}
 
           {isCompare ? (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -2017,6 +2067,35 @@ function LabPage({ apiKey }) {
 
         {/* ПРАВА — результат */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {isCompare && (
+            <div className="vp-panel" style={{ padding: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
+                <span className="vp-label">Матриця тесту</span>
+                <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--dim2)" }}>{total} кейсів</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 10 }}>
+                {[["TP", "вірно флагнув", "var(--ok)"], ["FP", "хибна тривога", "var(--fail)"], ["FN", "пропустив", "var(--fail)"], ["TN", "вірно пропустив", "var(--ok)"]].map(([k, lbl, col]) => (
+                  <div key={k} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "8px 10px" }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700, color: col }}>{k}</span>
+                      <span style={{ fontSize: 18, fontWeight: 700 }}>{M[k]}</span>
+                    </div>
+                    <div style={{ fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--dim2)" }}>{lbl}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--dim)", marginBottom: 10 }}>
+                <span>Precision <b style={{ color: "var(--text)" }}>{pct(prec)}</b></span>
+                <span>Recall <b style={{ color: "var(--text)" }}>{pct(rec)}</b></span>
+                <span>Accuracy <b style={{ color: "var(--text)" }}>{pct(acc)}</b></span>
+                <span>F1 <b style={{ color: "var(--text)" }}>{pct(f1)}</b></span>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="vp-btn" onClick={exportXlsx} disabled={!total} style={{ borderColor: total ? "var(--ok)" : "var(--line2)", color: total ? "var(--ok)" : "var(--dim2)" }}>⬇ Excel ({total})</button>
+                <button className="vp-btn" onClick={resetLog} disabled={!total}>Скинути лог</button>
+              </div>
+            </div>
+          )}
           {!result && !running && (
             <div className="vp-panel" style={{ padding: "40px 20px", textAlign: "center", color: "var(--dim2)", fontSize: 12.5 }}>
               Результат зʼявиться тут — вердикт, зона на рендері та сирий JSON.
@@ -2054,10 +2133,19 @@ function LabPage({ apiKey }) {
                   <div style={{ padding: "10px 16px", borderBottom: "1px solid var(--line)", fontFamily: "var(--font-mono)", fontSize: 9, letterSpacing: "0.12em", color: "var(--dim2)" }}>ПРАВКИ ({result.changes.filter(c => c.done === "yes").length}/{result.changes.length})</div>
                   {result.changes.map((c, i) => {
                     const dc = DONE_CFG[c.done] || DONE_CFG.no;
+                    const ev = evalOf(result._runId, i);
                     return (
-                      <div key={i} style={{ padding: "9px 16px", borderBottom: "1px solid var(--line)", display: "flex", gap: 10, alignItems: "flex-start" }}>
-                        <span style={{ fontSize: 13, lineHeight: 1.3, flexShrink: 0 }}>{dc.icon}</span>
-                        <span style={{ fontSize: 12.5, lineHeight: 1.5, color: c.done === "yes" ? "var(--dim)" : "var(--text)", textDecoration: c.done === "yes" ? "line-through" : "none" }}>{c.text}</span>
+                      <div key={i} style={{ padding: "9px 16px", borderBottom: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 6 }}>
+                        <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                          <span style={{ fontSize: 13, lineHeight: 1.3, flexShrink: 0 }}>{dc.icon}</span>
+                          <span style={{ fontSize: 12.5, lineHeight: 1.5, color: c.done === "yes" ? "var(--dim)" : "var(--text)", textDecoration: c.done === "yes" ? "line-through" : "none", flex: 1 }}>{c.text}</span>
+                        </div>
+                        <div style={{ display: "flex", gap: 6, alignItems: "center", paddingLeft: 23 }}>
+                          <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--dim2)" }}>AI правий?</span>
+                          <button onClick={() => recordEval(result._runId, i, c, true)} style={{ fontFamily: "var(--font-mono)", fontSize: 10, padding: "3px 9px", borderRadius: 6, cursor: "pointer", border: `1px solid ${ev && ev.correct === true ? "var(--ok)" : "var(--line2)"}`, background: ev && ev.correct === true ? "rgba(34,197,94,.15)" : "transparent", color: ev && ev.correct === true ? "var(--ok)" : "var(--dim)" }}>✅ так</button>
+                          <button onClick={() => recordEval(result._runId, i, c, false)} style={{ fontFamily: "var(--font-mono)", fontSize: 10, padding: "3px 9px", borderRadius: 6, cursor: "pointer", border: `1px solid ${ev && ev.correct === false ? "var(--fail)" : "var(--line2)"}`, background: ev && ev.correct === false ? "rgba(239,68,68,.15)" : "transparent", color: ev && ev.correct === false ? "var(--fail)" : "var(--dim)" }}>❌ ні</button>
+                          {ev && <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 700, color: (ev.cls === "TP" || ev.cls === "TN") ? "var(--ok)" : "var(--fail)" }}>{ev.cls}</span>}
+                        </div>
                       </div>
                     );
                   })}
@@ -2129,7 +2217,7 @@ export default function App() {
   const saveCustomSlots = slots => { setCustomSlots(slots); try { localStorage.setItem("rqa_custom_slots", JSON.stringify(slots)); } catch { /* ignore */ } };
   const [slotMenuOpen, setSlotMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [view, setView] = useState("app");
+  const [view, setView] = useState(TODO_TEST_ONLY ? "lab" : "app");
 
   // Після конвертації DWG→DXF оновлюємо файл у списку
   const handleDwgConverted = useCallback((fileList, dwgFile, dxfText) => {
@@ -3025,11 +3113,13 @@ ${briefText.trim() || "(дивись прикріплені матеріали)"
           <span style={{ fontSize: 13, color: "var(--dim)" }}>Перевірка рендерів</span>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", position: "relative" }}>
-          <div style={{ display: "flex", background: "var(--panel)", border: "1px solid var(--line2)", borderRadius: 9, padding: 2, marginRight: 4 }}>
-            {[{ id: "app", label: "Перевірка" }, { id: "lab", label: "Лабораторія" }].map(v => (
-              <button key={v.id} onClick={() => setView(v.id)} style={{ fontFamily: "var(--font-mono)", fontSize: 11, padding: "6px 14px", border: "none", borderRadius: 7, cursor: "pointer", background: view === v.id ? "var(--panel2)" : "transparent", color: view === v.id ? "var(--text)" : "var(--dim)", boxShadow: view === v.id ? "0 0 0 1px var(--line2)" : "none" }}>{v.label}</button>
-            ))}
-          </div>
+          {!TODO_TEST_ONLY && (
+            <div style={{ display: "flex", background: "var(--panel)", border: "1px solid var(--line2)", borderRadius: 9, padding: 2, marginRight: 4 }}>
+              {[{ id: "app", label: "Перевірка" }, { id: "lab", label: "Лабораторія" }].map(v => (
+                <button key={v.id} onClick={() => setView(v.id)} style={{ fontFamily: "var(--font-mono)", fontSize: 11, padding: "6px 14px", border: "none", borderRadius: 7, cursor: "pointer", background: view === v.id ? "var(--panel2)" : "transparent", color: view === v.id ? "var(--text)" : "var(--dim)", boxShadow: view === v.id ? "0 0 0 1px var(--line2)" : "none" }}>{v.label}</button>
+              ))}
+            </div>
+          )}
           {view === "app" && step === 2 && sel !== null && <button className="vp-btn" onClick={() => setSel(null)}>← {isRev ? "Раунди" : "Ракурси"}</button>}
           {view === "app" && step === 2 && <button className="vp-btn" onClick={reset}>← Нова перевірка</button>}
           {view === "app" && step === 2 && perData.some(d => d && !d.error) && <button className="vp-btn" onClick={generateReport} style={{ borderColor: "var(--ok)", color: "var(--ok)" }}>📄 PDF</button>}
@@ -3044,7 +3134,7 @@ ${briefText.trim() || "(дивись прикріплені матеріали)"
         </div>
       </div>
 
-      {view === "lab" && <LabPage apiKey={anthropicKey} />}
+      {view === "lab" && <LabPage apiKey={anthropicKey} lockCheckId={TODO_TEST_ONLY ? "S13" : null} />}
 
       {view === "app" && step === 1 && savedSession && (
         <div className="vp-panel" style={{ margin: "12px 24px", padding: "10px 16px", display: "flex", alignItems: "center", gap: 12 }}>
