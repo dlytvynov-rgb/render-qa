@@ -1973,45 +1973,48 @@ function LabPage({ apiKey, lockCheckId }) {
     : (rFile?.preview || rFile?.pages?.[0]?.preview);
   const DONE_CFG = { yes: { icon: "✅", color: "var(--ok)" }, partial: { icon: "⚠️", color: "var(--warn)" }, no: { icon: "❌", color: "var(--fail)" }, regressed: { icon: "🔻", color: "var(--fail)" } };
 
-  // ── Тест-лог + матриця TP/FP/FN/TN ──
+  // ── Тест-лог: реальний статус кожної правки → TP/FP/FN (Doc Nexus, без TN у метриках) ──
+  const REAL_OPTS = [
+    ["yes", "✅ Виконано", "var(--ok)", "rgba(34,197,94,.15)"],
+    ["no", "❌ Ні", "var(--fail)", "rgba(239,68,68,.15)"],
+    ["partial", "⚠ Частково", "var(--warn)", "rgba(245,158,11,.15)"],
+  ];
   const [log, setLog] = useState(loadTestLog);
-  const recordEval = (runId, idx, change, correct) => {
+  const recordEval = (runId, idx, change, real) => {
     const caseId = `${runId}:${idx}`;
-    const aiPositive = change.done !== "yes"; // AI флагнув проблему
-    const cls = aiPositive ? (correct ? "TP" : "FP") : (correct ? "TN" : "FN");
+    const aiFlagged = change.done !== "yes"; // AI сказав «не виконано/частково»
+    const realProblem = real !== "yes";      // насправді є недороб
+    const cls = aiFlagged ? (realProblem ? "TP" : "FP") : (realProblem ? "FN" : "TN");
     setLog(prev => {
       const next = prev.filter(e => e.caseId !== caseId);
-      next.push({ caseId, ts: new Date().toISOString(), checkId: check.id, change: change.text, done: change.done, aiPositive, correct, cls });
+      next.push({ caseId, ts: new Date().toISOString(), checkId: check.id, change: change.text, done: change.done, real, cls });
       saveTestLog(next); return next;
     });
   };
   const evalOf = (runId, idx) => log.find(e => e.caseId === `${runId}:${idx}`);
   const resetLog = () => { setLog([]); saveTestLog([]); };
-  const M = { TP: 0, FP: 0, TN: 0, FN: 0 };
+  const M = { TP: 0, FP: 0, FN: 0, TN: 0 };
   log.forEach(e => { if (M[e.cls] != null) M[e.cls]++; });
   const total = log.length;
   const prec = (M.TP + M.FP) ? M.TP / (M.TP + M.FP) : null;
   const rec = (M.TP + M.FN) ? M.TP / (M.TP + M.FN) : null;
-  const acc = total ? (M.TP + M.TN) / total : null;
-  const f1 = (prec != null && rec != null && (prec + rec) > 0) ? 2 * prec * rec / (prec + rec) : null;
+  const f1 = (2 * M.TP + M.FP + M.FN) ? 2 * M.TP / (2 * M.TP + M.FP + M.FN) : null;
   const pct = v => v == null ? "—" : `${Math.round(v * 100)}%`;
   const exportXlsx = async () => {
     const XLSX = await loadXLSX();
-    const cases = log.map((e, i) => ({ "#": i + 1, "Час": e.ts, "Правка": e.change, "AI виконано?": e.done, "AI флагнув проблему": e.aiPositive ? "так" : "ні", "AI правий?": e.correct ? "так" : "ні", "Клас": e.cls }));
+    const cases = log.map((e, i) => ({ "#": i + 1, "Час": e.ts, "Пункт": e.checkId, "Правка": e.change, "AI: виконано?": e.done, "Насправді": e.real, "Клас": e.cls }));
     const summary = [
-      { "Метрика": "TP — вірно флагнув", "Значення": M.TP },
+      { "Метрика": "TP — вірно флагнув недороб", "Значення": M.TP },
       { "Метрика": "FP — хибна тривога", "Значення": M.FP },
-      { "Метрика": "FN — пропустив", "Значення": M.FN },
-      { "Метрика": "TN — вірно пропустив", "Значення": M.TN },
-      { "Метрика": "Всього кейсів", "Значення": total },
+      { "Метрика": "FN — пропустив недороб", "Значення": M.FN },
+      { "Метрика": "Всього оцінено", "Значення": total },
       { "Метрика": "Precision", "Значення": pct(prec) },
       { "Метрика": "Recall", "Значення": pct(rec) },
-      { "Метрика": "Accuracy", "Значення": pct(acc) },
       { "Метрика": "F1", "Значення": pct(f1) },
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(cases.length ? cases : [{ "#": "" }]), "Кейси");
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summary), "Матриця");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summary), "Метрики");
     XLSX.writeFile(wb, `render-qa-todo-test_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
   const anns = result && !result.error && result.zone
@@ -2105,7 +2108,7 @@ function LabPage({ apiKey, lockCheckId }) {
                     <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, letterSpacing: "0.12em", color: "var(--dim2)" }}>ПРАВКИ ({result.changes.length})</span>
                     {total > 0 && (
                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--dim)" }}>
-                        <b style={{ color: "var(--ok)" }}>TP {M.TP}</b> · <b style={{ color: "var(--fail)" }}>FP {M.FP}</b> · <b style={{ color: "var(--fail)" }}>FN {M.FN}</b> · <b style={{ color: "var(--ok)" }}>TN {M.TN}</b> · F1 {pct(f1)}
+                        <b style={{ color: "var(--ok)" }}>TP {M.TP}</b> · <b style={{ color: "var(--fail)" }}>FP {M.FP}</b> · <b style={{ color: "var(--fail)" }}>FN {M.FN}</b> · P {pct(prec)} · R {pct(rec)} · <b>F1 {pct(f1)}</b>
                       </span>
                     )}
                     <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
@@ -2122,11 +2125,13 @@ function LabPage({ apiKey, lockCheckId }) {
                           <span style={{ fontSize: 13, lineHeight: 1.3, flexShrink: 0 }}>{dc.icon}</span>
                           <span style={{ fontSize: 12.5, lineHeight: 1.5, color: c.done === "yes" ? "var(--dim)" : "var(--text)", textDecoration: c.done === "yes" ? "line-through" : "none", flex: 1 }}>{c.text}</span>
                         </div>
-                        <div style={{ display: "flex", gap: 6, alignItems: "center", paddingLeft: 23 }}>
-                          <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--dim2)" }}>AI правий?</span>
-                          <button onClick={() => recordEval(result._runId, i, c, true)} style={{ fontFamily: "var(--font-mono)", fontSize: 10, padding: "3px 9px", borderRadius: 6, cursor: "pointer", border: `1px solid ${ev && ev.correct === true ? "var(--ok)" : "var(--line2)"}`, background: ev && ev.correct === true ? "rgba(34,197,94,.15)" : "transparent", color: ev && ev.correct === true ? "var(--ok)" : "var(--dim)" }}>✅ так</button>
-                          <button onClick={() => recordEval(result._runId, i, c, false)} style={{ fontFamily: "var(--font-mono)", fontSize: 10, padding: "3px 9px", borderRadius: 6, cursor: "pointer", border: `1px solid ${ev && ev.correct === false ? "var(--fail)" : "var(--line2)"}`, background: ev && ev.correct === false ? "rgba(239,68,68,.15)" : "transparent", color: ev && ev.correct === false ? "var(--fail)" : "var(--dim)" }}>❌ ні</button>
-                          {ev && <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 700, color: (ev.cls === "TP" || ev.cls === "TN") ? "var(--ok)" : "var(--fail)" }}>{ev.cls}</span>}
+                        <div style={{ display: "flex", gap: 6, alignItems: "center", paddingLeft: 23, flexWrap: "wrap" }}>
+                          <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--dim2)" }}>Насправді:</span>
+                          {REAL_OPTS.map(([val, lbl, col, bg]) => {
+                            const on = ev && ev.real === val;
+                            return <button key={val} onClick={() => recordEval(result._runId, i, c, val)} style={{ fontFamily: "var(--font-mono)", fontSize: 10, padding: "3px 9px", borderRadius: 6, cursor: "pointer", border: `1px solid ${on ? col : "var(--line2)"}`, background: on ? bg : "transparent", color: on ? col : "var(--dim)" }}>{lbl}</button>;
+                          })}
+                          {ev && <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 700, color: ev.cls === "TP" ? "var(--ok)" : ev.cls === "TN" ? "var(--dim2)" : "var(--fail)" }}>{ev.cls}</span>}
                         </div>
                       </div>
                     );
