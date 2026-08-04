@@ -1925,6 +1925,7 @@ function saveTestLog(log) { try { localStorage.setItem(TESTLOG_KEY, JSON.stringi
 function LabPage({ apiKey, lockCheckId }) {
   const render = useFileList("lab-render");
   const after = useFileList("lab-after");
+  const todoVis = useFileList("lab-todovis");
   const doc = useFileList("lab-doc");
   const [checkId, setCheckId] = useState(lockCheckId || "S1");
   const [tzText, setTzText] = useState("");
@@ -1936,6 +1937,7 @@ function LabPage({ apiKey, lockCheckId }) {
   const isCompare = sverkaIsComparison(checkId);
   const rFile = render.files.find(f => f._done && !f._error);
   const aFile = after.files.find(f => f._done && !f._error);
+  const visFiles = todoVis.files.filter(f => f._done && !f._error);
   const dFile = doc.files.find(f => f._done && !f._error);
   const docLabel = dFile ? `${DOC_TYPES[dFile._docType] || "Документ"} · ${dFile.filename}` : "";
   const canRun = isCompare ? (rFile && aFile) : rFile;
@@ -1949,9 +1951,10 @@ function LabPage({ apiKey, lockCheckId }) {
     try {
       let parts;
       if (isCompare) {
-        parts = [{ type: "text", text: sverkaSingleComparePrompt(check, tzText, ZONE_PROMPT) }];
+        parts = [{ type: "text", text: sverkaSingleComparePrompt(check, tzText, ZONE_PROMPT, visFiles.length > 0) }];
         parts.push(...filesToParts([rFile], "РЕНДЕР ДО"));
         parts.push(...filesToParts([aFile], "РЕНДЕР ПІСЛЯ"));
+        if (visFiles.length) parts.push(...filesToParts(visFiles, "ВІЗУАЛЬНИЙ ТУ-ДУ"));
       } else {
         parts = [{ type: "text", text: sverkaSinglePrompt(check, docLabel, tzText, ZONE_PROMPT) }];
         parts.push(...filesToParts([rFile], "РЕНДЕР"));
@@ -1964,7 +1967,7 @@ function LabPage({ apiKey, lockCheckId }) {
       setResult({ error: e.message, _ms: Math.round(Date.now() - t0) });
     }
     setRunning(false);
-  }, [apiKey, isCompare, rFile, aFile, dFile, docLabel, tzText, check]);
+  }, [apiKey, isCompare, rFile, aFile, visFiles, dFile, docLabel, tzText, check]);
 
   const cfg = result && !result.error ? (SVERKA_STATUS[result.status] || SVERKA_STATUS.unchecked) : null;
   // зона малюється на ПІСЛЯ (для порівняння) або на єдиному рендері
@@ -2047,10 +2050,13 @@ function LabPage({ apiKey, lockCheckId }) {
           )}
 
           {isCompare ? (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <UploadBox label="РЕНДЕР — ДО" files={render.files} onAdd={render.add} onRemove={render.remove} color="#71717A" />
-              <UploadBox label="РЕНДЕР — ПІСЛЯ" files={after.files} onAdd={after.add} onRemove={after.remove} color="#A99EE0" />
-            </div>
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <UploadBox label="РЕНДЕР — ДО" files={render.files} onAdd={render.add} onRemove={render.remove} color="#71717A" />
+                <UploadBox label="РЕНДЕР — ПІСЛЯ" files={after.files} onAdd={after.add} onRemove={after.remove} color="#A99EE0" />
+              </div>
+              <UploadBox label="ВІЗУАЛЬНИЙ ТУ-ДУ" note="скріни / PDF з розміткою й коментами клієнта (опційно)" files={todoVis.files} onAdd={todoVis.add} onRemove={todoVis.remove} color="#3FA7C2" />
+            </>
           ) : (
             <>
               <UploadBox label="РЕНДЕР" hero files={render.files} onAdd={render.add} onRemove={render.remove} color="#A99EE0" />
@@ -2059,7 +2065,7 @@ function LabPage({ apiKey, lockCheckId }) {
           )}
 
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span className="vp-label">{isCompare ? "Список змін (правки)" : "ТЗ-контекст (опційно)"}</span>
+            <span className="vp-label">{isCompare ? "Список змін (текст, опційно)" : "ТЗ-контекст (опційно)"}</span>
             <textarea className="vp-input" value={tzText} onChange={e => setTzText(e.target.value)} placeholder={isCompare ? "• Прибрати зайвий стілець зліва\n• Замінити колір дивана на сірий\n• Додати світильник над столом" : "Напр.: стеля — гіпсокартон 2 рівні, 6 вбудованих світильників…"} style={{ width: "100%", minHeight: isCompare ? 90 : 66, lineHeight: 1.6, resize: "vertical" }} />
           </div>
 

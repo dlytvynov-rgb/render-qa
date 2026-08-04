@@ -156,6 +156,15 @@ describe("sverkaSingleComparePrompt", () => {
     expect(() => sverkaSingleComparePrompt(check, "", "")).not.toThrow();
     expect(typeof sverkaSingleComparePrompt(check, "", "")).toBe("string");
   });
+  it("з візуальним ту-ду згадує розмітку клієнта", () => {
+    const p = sverkaSingleComparePrompt(check, "", "ZR", true);
+    expect(p).toContain("ВІЗУАЛЬНИЙ ТУ-ДУ");
+    expect(p).toMatch(/розмітк/i);
+  });
+  it("без візуального — не додає його рядок про зображення", () => {
+    const p = sverkaSingleComparePrompt(check, "текст", "ZR", false);
+    expect(p).not.toContain("Наступні зображення = ВІЗУАЛЬНИЙ");
+  });
 });
 
 describe("SVERKA_STATUS", () => {
