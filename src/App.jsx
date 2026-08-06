@@ -41,19 +41,21 @@ async function pdfToPages(file, onProg, sig) {
   if (sig?.aborted) throw new DOMException("Aborted", "AbortError");
   const pdf = await lib.getDocument({ data: new Uint8Array(buf) }).promise;
   const n = pdf.numPages, mb = file.size / 1048576;
-  let sc = 1.2, q = 0.72;
-  if (n > 4 || mb > 10) { sc = 1.0; q = 0.62; }
-  if (n > 8 || mb > 20) { sc = 0.8; q = 0.55; }
+  let q = 0.84, maxDim = 2048; // масштабуємо сторінку під довгу сторону (креслення дрібні — вища роздільність допомагає рахувати світильники/деталі)
+  if (n > 4 || mb > 10) { q = 0.72; maxDim = 1600; }
+  if (n > 8 || mb > 20) { q = 0.6; maxDim = 1200; }
   const pages = [];
   for (let i = 1; i <= n; i++) {
     if (sig?.aborted) throw new DOMException("Aborted", "AbortError");
     const page = await pdf.getPage(i);
-    const vp = page.getViewport({ scale: sc });
+    const base = page.getViewport({ scale: 1 });
+    const scale = Math.min(maxDim / base.width, maxDim / base.height, 3); // не роздувати дрібні PDF надміру
+    const vp = page.getViewport({ scale });
     const canvas = document.createElement("canvas");
-    canvas.width = Math.min(vp.width, 1024); canvas.height = Math.min(vp.height, 1024);
+    canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
     await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
-    let b64 = canvas.toDataURL("image/jpeg", q).split(",")[1], qq = q;
-    while (b64.length * 0.75 > 3.5e6 && qq > 0.3) { qq -= 0.08; b64 = canvas.toDataURL("image/jpeg", qq).split(",")[1]; }
+    let qq = q, b64 = canvas.toDataURL("image/jpeg", qq).split(",")[1];
+    while (b64.length * 0.75 > 4.5e6 && qq > 0.35) { qq -= 0.08; b64 = canvas.toDataURL("image/jpeg", qq).split(",")[1]; }
     // Extract text layer per page — annotations/labels that reference visual elements on this page
     let pageText = null;
     try {
@@ -78,12 +80,12 @@ async function imageToB64(file, onProg, sig) {
       img.onload = () => {
         try {
           const canvas = document.createElement("canvas");
-          let { width: w, height: h } = img; const max = 1024;
+          let { width: w, height: h } = img; const max = 2560; // Sonnet 5 бачить до 2576px — віддаємо максимум фактури (grout/шви/латунь)
           if (w > max || h > max) { const r = Math.min(max / w, max / h); w = Math.round(w * r); h = Math.round(h * r); }
           canvas.width = w; canvas.height = h;
-          canvas.getContext("2d").drawImage(img, 0, 0, w, h);
-          let qq = 0.72, b64 = canvas.toDataURL("image/jpeg", qq).split(",")[1];
-          while (b64.length * 0.75 > 2.5e6 && qq > 0.3) { qq -= 0.1; b64 = canvas.toDataURL("image/jpeg", qq).split(",")[1]; }
+          const cx2 = canvas.getContext("2d"); cx2.imageSmoothingQuality = "high"; cx2.drawImage(img, 0, 0, w, h);
+          let qq = 0.88, b64 = canvas.toDataURL("image/jpeg", qq).split(",")[1];
+          while (b64.length * 0.75 > 4.5e6 && qq > 0.4) { qq -= 0.06; b64 = canvas.toDataURL("image/jpeg", qq).split(",")[1]; }
           const preview = canvas.toDataURL("image/jpeg", 0.75);
           onProg?.(100);
           res({ b64, preview, type: "image", filename: file.name, pages: [{ b64, preview }] });
@@ -386,7 +388,7 @@ async function callAPI(parts, retries = 2, apiKey = "") {
       const resp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-beta": "prompt-caching-2024-07-31", "anthropic-dangerous-direct-browser-access": "true", "x-api-key": apiKey },
-        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 8000, messages: [{ role: "user", content: parts }] })
+        body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 16000, messages: [{ role: "user", content: parts }] })
       });
       let data; try { data = await resp.json(); } catch { throw new Error(`HTTP ${resp.status}`); }
       if (!resp.ok) {
@@ -1996,29 +1998,46 @@ function LabPage({ apiKey, lockCheckId }) {
   };
   const evalOf = (runId, idx) => log.find(e => e.caseId === `${runId}:${idx}`);
   const resetLog = () => { setLog([]); saveTestLog([]); };
+  // Метрики та експорт — лише по ПОТОЧНОМУ прогону (кожна генерація окремо, не змішуємо запуски)
+  const runLog = (result && result._runId != null)
+    ? log.filter(e => e.caseId && e.caseId.startsWith(result._runId + ":"))
+    : log;
   const M = { TP: 0, FP: 0, FN: 0, TN: 0 };
-  log.forEach(e => { if (M[e.cls] != null) M[e.cls]++; });
-  const total = log.length;
-  const prec = (M.TP + M.FP) ? M.TP / (M.TP + M.FP) : null;
-  const rec = (M.TP + M.FN) ? M.TP / (M.TP + M.FN) : null;
-  const f1 = (2 * M.TP + M.FP + M.FN) ? 2 * M.TP / (2 * M.TP + M.FP + M.FN) : null;
+  runLog.forEach(e => { if (M[e.cls] != null) M[e.cls]++; });
+  const total = runLog.length;
+  // Вироджені випадки (ділення 0/0) трактуємо як «немає помилок → ідеально»:
+  // немає позитивів і немає пропусків → 100%; є реальні недороби, але AI нічого не флагнув → 0%.
+  const prec = (M.TP + M.FP) ? M.TP / (M.TP + M.FP) : (M.FN ? 0 : 1);
+  const rec = (M.TP + M.FN) ? M.TP / (M.TP + M.FN) : 1;
+  const f1 = (2 * M.TP + M.FP + M.FN) ? 2 * M.TP / (2 * M.TP + M.FP + M.FN) : 1;
+  const acc = total ? (M.TP + M.TN) / total : 1; // частка вірних вердиктів AI (усі вірні / всього)
   const pct = v => v == null ? "—" : `${Math.round(v * 100)}%`;
   const exportXlsx = async () => {
     const XLSX = await loadXLSX();
-    const cases = log.map((e, i) => ({ "#": i + 1, "Час": e.ts, "Пункт": e.checkId, "Правка": e.change, "AI: виконано?": e.done, "Насправді": e.real, "Клас": e.cls }));
+    const cases = runLog.map((e, i) => ({ "#": i + 1, "Час": e.ts, "Пункт": e.checkId, "Правка": e.change, "AI: виконано?": e.done, "Насправді": e.real, "Клас": e.cls }));
     const summary = [
+      { "Метрика": "Всього оцінено", "Значення": total },
       { "Метрика": "TP — вірно флагнув недороб", "Значення": M.TP },
       { "Метрика": "FP — хибна тривога", "Значення": M.FP },
       { "Метрика": "FN — пропустив недороб", "Значення": M.FN },
-      { "Метрика": "Всього оцінено", "Значення": total },
+      { "Метрика": "TN — вірно не флагнув", "Значення": M.TN },
       { "Метрика": "Precision", "Значення": pct(prec) },
       { "Метрика": "Recall", "Значення": pct(rec) },
-      { "Метрика": "F1", "Значення": pct(f1) },
+      { "Метрика": "F1-score", "Значення": pct(f1) },
+      { "Метрика": "Accuracy", "Значення": pct(acc) },
     ];
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(cases.length ? cases : [{ "#": "" }]), "Кейси");
+    const ws = XLSX.utils.json_to_sheet(cases.length ? cases : [{ "#": "" }]);
+    // Зведений підсумок одразу під списком кейсів — щоб було видно без переходу на інший аркуш
+    XLSX.utils.sheet_add_aoa(ws, [
+      [],
+      ["ПІДСУМОК"],
+      ...summary.map(m => [m["Метрика"], m["Значення"]]),
+    ], { origin: `A${cases.length + 2}` });
+    XLSX.utils.book_append_sheet(wb, ws, "Кейси");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summary), "Метрики");
-    XLSX.writeFile(wb, `render-qa-todo-test_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    const stamp = new Date().toISOString().slice(0, 19).replace("T", "_").replace(/:/g, "-");
+    XLSX.writeFile(wb, `render-qa-todo-test_${stamp}.xlsx`);
   };
   const anns = result && !result.error && result.zone
     ? [{ ...result, _src: "sverka", _srcIdx: 0, _label: check.id.slice(1), comment: check.label }]
@@ -2114,7 +2133,7 @@ function LabPage({ apiKey, lockCheckId }) {
                     <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, letterSpacing: "0.12em", color: "var(--dim2)" }}>ПРАВКИ ({result.changes.length})</span>
                     {total > 0 && (
                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--dim)" }}>
-                        <b style={{ color: "var(--ok)" }}>TP {M.TP}</b> · <b style={{ color: "var(--fail)" }}>FP {M.FP}</b> · <b style={{ color: "var(--fail)" }}>FN {M.FN}</b> · P {pct(prec)} · R {pct(rec)} · <b>F1 {pct(f1)}</b>
+                        N {total} · <b style={{ color: "var(--ok)" }}>TP {M.TP}</b> · <b style={{ color: "var(--fail)" }}>FP {M.FP}</b> · <b style={{ color: "var(--fail)" }}>FN {M.FN}</b> · <span style={{ color: "var(--dim2)" }}>TN {M.TN}</span> · P {pct(prec)} · R {pct(rec)} · <b>F1 {pct(f1)}</b> · <b style={{ color: "var(--vio)" }}>Acc {pct(acc)}</b>
                       </span>
                     )}
                     <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
