@@ -23,6 +23,32 @@ async function excelToText(file) {
   return lines.join("\n");
 }
 
+// ─── Tesseract.js OCR (клієнтський, детермінований — анти-галюцинація тексту) ───
+async function loadTesseract() {
+  if (window.Tesseract) return window.Tesseract;
+  await new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
+    s.onload = res; s.onerror = () => rej(new Error("Не вдалось завантажити Tesseract.js"));
+    document.head.appendChild(s);
+  });
+  return window.Tesseract;
+}
+async function runOCR(src, lang = "eng") {
+  const T = await loadTesseract();
+  const { data } = await T.recognize(src, lang);
+  const words = (data.words || []).filter(w => (w.text || "").trim()).map(w => ({ text: w.text.trim(), conf: Math.round(w.confidence) }));
+  const meanConf = words.length ? Math.round(words.reduce((s, w) => s + w.conf, 0) / words.length) : 0;
+  const text = (data.text || "").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  return { text, meanConf, words };
+}
+function ocrFlags(text, words) {
+  const t = (text || "").toLowerCase();
+  const placeholder = /\b(lorem|ipsum|dolor|consectetur|adipiscing|elit)\b/.test(t);
+  const lowConf = words.length >= 4 && words.filter(w => w.conf < 55).length / words.length > 0.4;
+  return { placeholder, lowConf };
+}
+
 // ─── PDF.js ───────────────────────────────────────────────────────────────────
 async function loadPdfJs() {
   if (window.pdfjsLib) return window.pdfjsLib;
@@ -1934,6 +1960,8 @@ function LabPage({ apiKey, lockCheckId }) {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
   const [rawOpen, setRawOpen] = useState(false);
+  const [ocrRunning, setOcrRunning] = useState(false);
+  const [ocr, setOcr] = useState(null);
 
   const check = SVERKA_CHECKS.find(c => c.id === checkId) || SVERKA_CHECKS[0];
   const isCompare = sverkaIsComparison(checkId);
@@ -1962,6 +1990,9 @@ function LabPage({ apiKey, lockCheckId }) {
         parts.push(...filesToParts([rFile], "РЕНДЕР"));
         if (dFile) parts.push(...filesToParts([dFile], "ДОКУМЕНТ"));
       }
+      if (ocr && ocr.text && ocr.meanConf >= 55) {
+        parts.push({ type: "text", text: `OCR-ТЕКСТ (детерміновано зчитано з зображень, впевненість ~${ocr.meanConf}%, БЕЗ галюцинацій):\n${ocr.text}\n\nПравки про написи / номери / лого / текст звіряй саме з цим OCR-текстом. НЕ вигадуй тексту, якого тут немає.` });
+      }
       const p = await callAPI(parts, 1, apiKey);
       const obj = (p && p.sverka && p.sverka[0]) || p || {};
       setResult({ ...obj, zone: obj.zone ? normalizeZone(obj.zone) : null, _ms: Math.round(Date.now() - t0), _runId: t0, _raw: p });
@@ -1969,7 +2000,29 @@ function LabPage({ apiKey, lockCheckId }) {
       setResult({ error: e.message, _ms: Math.round(Date.now() - t0) });
     }
     setRunning(false);
-  }, [apiKey, isCompare, rFile, aFile, visFiles, dFile, docLabel, tzText, check]);
+  }, [apiKey, isCompare, rFile, aFile, visFiles, dFile, docLabel, tzText, check, ocr]);
+
+  const runOcr = useCallback(async () => {
+    const toURL = pg => pg?.b64 ? `data:image/jpeg;base64,${pg.b64}` : (pg?.preview || null);
+    const srcs = [];
+    if (isCompare && aFile) srcs.push(["ПІСЛЯ", toURL(aFile.pages?.[0]) || aFile.preview]);
+    if (!isCompare && rFile) srcs.push(["РЕНДЕР", toURL(rFile.pages?.[0]) || rFile.preview]);
+    visFiles.forEach((f, i) => (f.pages || []).forEach((p, pi) => { const u = toURL(p); if (u) srcs.push([`ВІЗУАЛЬНИЙ ${i + 1}${f.pages.length > 1 ? "." + (pi + 1) : ""}`, u]); }));
+    const valid = srcs.filter(s => s[1]);
+    if (!valid.length) { setOcr({ error: "Немає зображення для OCR" }); return; }
+    setOcrRunning(true); setOcr(null);
+    try {
+      const blocks = []; let allWords = [];
+      for (const [lbl, src] of valid) {
+        const r = await runOCR(src, "eng");
+        if (r.text) { blocks.push(`[${lbl}] ${r.text}`); allWords = allWords.concat(r.words); }
+      }
+      const text = blocks.join("\n").trim();
+      const meanConf = allWords.length ? Math.round(allWords.reduce((s, w) => s + w.conf, 0) / allWords.length) : 0;
+      setOcr({ text, meanConf, flags: ocrFlags(text, allWords), n: valid.length });
+    } catch (e) { setOcr({ error: e.message }); }
+    setOcrRunning(false);
+  }, [isCompare, aFile, rFile, visFiles]);
 
   const cfg = result && !result.error ? (SVERKA_STATUS[result.status] || SVERKA_STATUS.unchecked) : null;
   // зона малюється на ПІСЛЯ (для порівняння) або на єдиному рендері
@@ -2086,6 +2139,27 @@ function LabPage({ apiKey, lockCheckId }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <span className="vp-label">{isCompare ? "Список змін (текст, опційно)" : "ТЗ-контекст (опційно)"}</span>
             <textarea className="vp-input" value={tzText} onChange={e => setTzText(e.target.value)} placeholder={isCompare ? "• Прибрати зайвий стілець зліва\n• Замінити колір дивана на сірий\n• Додати світильник над столом" : "Напр.: стеля — гіпсокартон 2 рівні, 6 вбудованих світильників…"} style={{ width: "100%", minHeight: isCompare ? 90 : 66, lineHeight: 1.6, resize: "vertical" }} />
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <button className="vp-btn" onClick={runOcr} disabled={ocrRunning || !(aFile || visFiles.length || (!isCompare && rFile))} style={{ padding: "7px 12px", fontSize: 11 }}>
+                {ocrRunning ? "🔎 Розпізнаю…" : "🔎 OCR тексту (Tesseract)"}
+              </button>
+              <span style={{ fontSize: 9, color: "var(--dim2)", fontFamily: "var(--font-mono)" }}>детермінований чит написів/номерів — анти-галюцинація</span>
+            </div>
+            {ocr && !ocr.error && (
+              <div className="vp-panel" style={{ padding: "8px 10px", fontFamily: "var(--font-mono)", fontSize: 10 }}>
+                <div style={{ color: "var(--dim2)", marginBottom: 4, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  <span>OCR · {ocr.n} зобр. · впевненість {ocr.meanConf}%</span>
+                  {ocr.flags?.placeholder && <span style={{ color: "var(--fail)" }}>⚠ placeholder/lorem</span>}
+                  {ocr.flags?.lowConf && <span style={{ color: "var(--warn)" }}>⚠ низька впевненість</span>}
+                  {ocr.text && ocr.meanConf >= 55 && <span style={{ color: "var(--ok)" }}>→ піде в аналіз</span>}
+                </div>
+                <div style={{ color: "var(--text)", whiteSpace: "pre-wrap", maxHeight: 130, overflowY: "auto", lineHeight: 1.5 }}>{ocr.text || "(тексту не знайдено)"}</div>
+              </div>
+            )}
+            {ocr?.error && <div style={{ fontSize: 10, color: "var(--fail)" }}>❌ {ocr.error}</div>}
           </div>
 
           <button className="vp-btn--primary" onClick={run} disabled={running || !canRun} style={{ padding: 15, borderRadius: 11, fontSize: 13, cursor: running || !canRun ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
