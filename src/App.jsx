@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { DOC_TYPES, SVERKA_CHECKS, SVERKA_STATUS, docTypeFromName, activeSverka, sverkaRows, sverkaPromptBlock, sverkaSinglePrompt, sverkaIsComparison, sverkaSingleComparePrompt } from "./sverka.js";
+import { DOC_TYPES, SVERKA_CHECKS, SVERKA_STATUS, docTypeFromName, activeSverka, sverkaRows, sverkaPromptBlock, sverkaSinglePrompt, sverkaIsComparison, sverkaSingleComparePrompt, sverkaZoomComparePrompt } from "./sverka.js";
 
 // ─── SheetJS ──────────────────────────────────────────────────────────────────
 async function loadXLSX() {
@@ -407,6 +407,26 @@ function normalizeZones(data) {
   if (!data) return data;
   const fixArr = arr => (arr || []).map(item => item?.zone ? { ...item, zone: normalizeZone(item.zone) } : item);
   return { ...data, items: fixArr(data.items), defects: fixArr(data.defects), corrections: fixArr(data.corrections), sverka: fixArr(data.sverka) };
+}
+function loadImg(src) {
+  return new Promise((res, rej) => { const img = new Image(); img.onload = () => res(img); img.onerror = () => rej(new Error("img decode")); img.src = src; });
+}
+// Вирізає зону (у %) з повнорозмірного JPEG-b64 і масштабує кроп до ~targetPx — «лупа» для дрібних деталей
+async function cropRegion(b64, zone, padPct = 8, targetPx = 1100) {
+  const img = await loadImg(`data:image/jpeg;base64,${b64}`);
+  const W = img.naturalWidth, H = img.naturalHeight;
+  const z = zone && typeof zone === "object" ? zone : { x: 0, y: 0, w: 100, h: 100 };
+  let x = (z.x - padPct) / 100 * W, y = (z.y - padPct) / 100 * H;
+  let w = (z.w + padPct * 2) / 100 * W, h = (z.h + padPct * 2) / 100 * H;
+  x = Math.max(0, Math.min(W - 1, x)); y = Math.max(0, Math.min(H - 1, y));
+  w = Math.max(1, Math.min(W - x, w)); h = Math.max(1, Math.min(H - y, h));
+  if (w < 24 || h < 24) { x = 0; y = 0; w = W; h = H; } // зона надто мала/невалідна → весь кадр
+  const scale = Math.min(targetPx / w, targetPx / h, 4);
+  const cw = Math.max(1, Math.round(w * scale)), ch = Math.max(1, Math.round(h * scale));
+  const canvas = document.createElement("canvas"); canvas.width = cw; canvas.height = ch;
+  const ctx = canvas.getContext("2d"); ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, x, y, w, h, 0, 0, cw, ch);
+  return canvas.toDataURL("image/jpeg", 0.9);
 }
 async function callAPI(parts, retries = 2, apiKey = "") {
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -1962,6 +1982,8 @@ function LabPage({ apiKey, lockCheckId }) {
   const [rawOpen, setRawOpen] = useState(false);
   const [ocrRunning, setOcrRunning] = useState(false);
   const [ocr, setOcr] = useState(null);
+  const [zoomRunning, setZoomRunning] = useState(false);
+  const [zoomInfo, setZoomInfo] = useState(null);
 
   const check = SVERKA_CHECKS.find(c => c.id === checkId) || SVERKA_CHECKS[0];
   const isCompare = sverkaIsComparison(checkId);
@@ -1995,7 +2017,8 @@ function LabPage({ apiKey, lockCheckId }) {
       }
       const p = await callAPI(parts, 1, apiKey);
       const obj = (p && p.sverka && p.sverka[0]) || p || {};
-      setResult({ ...obj, zone: obj.zone ? normalizeZone(obj.zone) : null, _ms: Math.round(Date.now() - t0), _runId: t0, _raw: p });
+      const nChanges = Array.isArray(obj.changes) ? obj.changes.map(c => ({ ...c, zone: c.zone ? normalizeZone(c.zone) : null, conf: typeof c.conf === "number" ? c.conf : null })) : obj.changes;
+      setResult({ ...obj, changes: nChanges, zone: obj.zone ? normalizeZone(obj.zone) : null, _ms: Math.round(Date.now() - t0), _runId: t0, _raw: p });
     } catch (e) {
       setResult({ error: e.message, _ms: Math.round(Date.now() - t0) });
     }
@@ -2023,6 +2046,40 @@ function LabPage({ apiKey, lockCheckId }) {
     } catch (e) { setOcr({ error: e.message }); }
     setOcrRunning(false);
   }, [isCompare, aFile, rFile, visFiles]);
+
+  const zoomEligible = (result?.changes || []).filter(c => c.done !== "yes" || (typeof c.conf === "number" && c.conf < 70)).length;
+  const runZoom = useCallback(async () => {
+    if (!result || !Array.isArray(result.changes) || !result.changes.length) return;
+    const aB64 = aFile?.pages?.[0]?.b64;
+    const bB64 = rFile?.pages?.[0]?.b64 || aB64;
+    if (!aB64) { setZoomInfo({ error: "Немає ПІСЛЯ-рендера для зуму" }); return; }
+    const idxs = result.changes
+      .map((c, i) => [c, i]).filter(([c]) => c.done !== "yes" || (typeof c.conf === "number" && c.conf < 70))
+      .map(([, i]) => i).slice(0, 8);
+    if (!idxs.length) { setZoomInfo({ error: "Немає сумнівних/флагнутих правок для уточнення" }); return; }
+    setZoomRunning(true); setZoomInfo({ done: 0, total: idxs.length });
+    const next = result.changes.slice();
+    for (let k = 0; k < idxs.length; k++) {
+      const i = idxs[k], c = next[i];
+      try {
+        const zone = c.zone || result.zone || { x: 0, y: 0, w: 100, h: 100 };
+        const beforeCrop = await cropRegion(bB64, zone);
+        const afterCrop = await cropRegion(aB64, zone);
+        const parts = [
+          { type: "text", text: sverkaZoomComparePrompt(check, c.text, false) },
+          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: beforeCrop.split(",")[1] } },
+          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: afterCrop.split(",")[1] } },
+        ];
+        const z = await callAPI(parts, 1, apiKey);
+        next[i] = { ...c, done: z?.done || c.done, conf: typeof z?.conf === "number" ? z.conf : c.conf, _zoomed: true, _zoomNote: z?.note || "" };
+      } catch (e) {
+        next[i] = { ...c, _zoomed: true, _zoomNote: "зум не вдався: " + e.message };
+      }
+      setZoomInfo({ done: k + 1, total: idxs.length });
+      setResult(r => ({ ...r, changes: next.slice() }));
+    }
+    setZoomRunning(false);
+  }, [result, aFile, rFile, check, apiKey]);
 
   const cfg = result && !result.error ? (SVERKA_STATUS[result.status] || SVERKA_STATUS.unchecked) : null;
   // зона малюється на ПІСЛЯ (для порівняння) або на єдиному рендері
@@ -2211,10 +2268,14 @@ function LabPage({ apiKey, lockCheckId }) {
                       </span>
                     )}
                     <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                      <button className="vp-btn" onClick={runZoom} disabled={zoomRunning || zoomEligible === 0} title="Кроп зони кожної сумнівної/флагнутої правки з оригіналу + переперевірка зблизька (+1 виклик на правку)" style={{ padding: "3px 9px", fontSize: 9, borderColor: "var(--vio)", color: "var(--vio)" }}>
+                        {zoomRunning ? `🔬 ${zoomInfo?.done || 0}/${zoomInfo?.total || 0}…` : `🔬 Уточнити зумом (${zoomEligible})`}
+                      </button>
                       <button className="vp-btn" onClick={exportXlsx} disabled={!total} style={{ padding: "3px 9px", fontSize: 9, borderColor: total ? "var(--ok)" : "var(--line2)", color: total ? "var(--ok)" : "var(--dim2)" }}>⬇ xlsx ({total})</button>
                       <button className="vp-btn" onClick={resetLog} disabled={!total} style={{ padding: "3px 9px", fontSize: 9 }} title="Скинути лог">↺</button>
                     </span>
                   </div>
+                  {zoomInfo?.error && <div style={{ padding: "4px 16px", fontSize: 9, color: "var(--warn)", fontFamily: "var(--font-mono)" }}>{zoomInfo.error}</div>}
                   {result.changes.map((c, i) => {
                     const dc = DONE_CFG[c.done] || DONE_CFG.no;
                     const ev = evalOf(result._runId, i);
@@ -2223,7 +2284,9 @@ function LabPage({ apiKey, lockCheckId }) {
                         <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
                           <span style={{ fontSize: 13, lineHeight: 1.3, flexShrink: 0 }}>{dc.icon}</span>
                           <span style={{ fontSize: 12.5, lineHeight: 1.5, color: c.done === "yes" ? "var(--dim)" : "var(--text)", textDecoration: c.done === "yes" ? "line-through" : "none", flex: 1 }}>{c.text}</span>
+                          {c._zoomed && <span title={c._zoomNote || ""} style={{ flexShrink: 0, alignSelf: "flex-start", fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--vio)", border: "1px solid var(--vio)", borderRadius: 4, padding: "1px 5px" }}>🔬{typeof c.conf === "number" ? ` ${c.conf}%` : ""}</span>}
                         </div>
+                        {c._zoomed && c._zoomNote && <div style={{ fontSize: 10, color: "var(--dim2)", fontStyle: "italic", paddingLeft: 23, lineHeight: 1.4 }}>🔬 {c._zoomNote}</div>}
                         <div style={{ display: "flex", gap: 6, alignItems: "center", paddingLeft: 23, flexWrap: "wrap" }}>
                           <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--dim2)" }}>Насправді:</span>
                           {REAL_OPTS.map(([val, lbl, col, bg]) => {

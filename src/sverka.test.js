@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { SVERKA_CHECKS, DOC_TYPES, docTypeFromName, activeSverka, sverkaRows, sverkaPromptBlock, sverkaSinglePrompt, sverkaIsComparison, sverkaSingleComparePrompt, SVERKA_STATUS } from "./sverka.js";
+import { SVERKA_CHECKS, DOC_TYPES, docTypeFromName, activeSverka, sverkaRows, sverkaPromptBlock, sverkaSinglePrompt, sverkaIsComparison, sverkaSingleComparePrompt, sverkaZoomComparePrompt, SVERKA_STATUS } from "./sverka.js";
 
 describe("SVERKA_CHECKS", () => {
   it("містить 13 пунктів S1–S13", () => {
@@ -164,6 +164,28 @@ describe("sverkaSingleComparePrompt", () => {
   it("без візуального — не додає його рядок про зображення", () => {
     const p = sverkaSingleComparePrompt(check, "текст", "ZR", false);
     expect(p).not.toContain("Наступні зображення = ВІЗУАЛЬНИЙ");
+  });
+  it("схема просить zone і conf на кожну правку (для зум-перевірки)", () => {
+    const p = sverkaSingleComparePrompt(check, "текст", "", false);
+    expect(p).toMatch(/"conf"\s*:/);
+    expect(p).toMatch(/у КОЖНІЙ правці/i);
+  });
+});
+
+describe("sverkaZoomComparePrompt", () => {
+  const check = SVERKA_CHECKS.find(c => c.id === "S13");
+  it("фокусує на одній правці, згадує кроп ДО/ПІСЛЯ і просить JSON з done+conf", () => {
+    const p = sverkaZoomComparePrompt(check, "Замінити grout на світліший", false);
+    expect(p).toContain("ДО");
+    expect(p).toContain("ПІСЛЯ");
+    expect(p).toContain("Замінити grout на світліший");
+    expect(p).toMatch(/кроп/i);
+    expect(p).toMatch(/"done"\s*:/);
+    expect(p).toMatch(/"conf"\s*:/);
+  });
+  it("без візуального не додає рядок про кроп розмітки; з візуальним — додає", () => {
+    expect(sverkaZoomComparePrompt(check, "x", false)).not.toMatch(/кроп ВІЗУАЛЬНОГО/);
+    expect(sverkaZoomComparePrompt(check, "x", true)).toMatch(/ВІЗУАЛЬНОГО ТУ-ДУ/);
   });
 });
 
