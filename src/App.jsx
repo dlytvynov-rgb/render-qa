@@ -428,6 +428,24 @@ async function cropRegion(b64, zone, padPct = 8, targetPx = 1100) {
   ctx.drawImage(img, x, y, w, h, 0, 0, cw, ch);
   return canvas.toDataURL("image/jpeg", 0.9);
 }
+// Піксельний diff ДО↔ПІСЛЯ: повертає ПІСЛЯ з ЧЕРВОНОЮ підсвіткою змінених зон + % зміненого кадру.
+// Без залежностей; поріг гасить JPEG-шум. (Припущення: той самий ракурс камери.)
+async function diffRenders(b64a, b64b, W = 1200, thr = 45) {
+  const [ia, ib] = await Promise.all([loadImg(`data:image/jpeg;base64,${b64a}`), loadImg(`data:image/jpeg;base64,${b64b}`)]);
+  const H = Math.max(1, Math.round(W * ib.naturalHeight / ib.naturalWidth));
+  const mk = img => { const c = document.createElement("canvas"); c.width = W; c.height = H; const x = c.getContext("2d"); x.imageSmoothingQuality = "high"; x.drawImage(img, 0, 0, W, H); return x; };
+  const da = mk(ia).getImageData(0, 0, W, H).data;
+  const cb = mk(ib), db = cb.getImageData(0, 0, W, H).data;
+  const out = cb.createImageData(W, H), od = out.data;
+  let changed = 0;
+  for (let i = 0; i < da.length; i += 4) {
+    const d = Math.abs(da[i] - db[i]) + Math.abs(da[i + 1] - db[i + 1]) + Math.abs(da[i + 2] - db[i + 2]);
+    if (d > thr) { changed++; od[i] = db[i] * 0.35 + 167; od[i + 1] = db[i + 1] * 0.35; od[i + 2] = db[i + 2] * 0.35; od[i + 3] = 255; }
+    else { od[i] = db[i]; od[i + 1] = db[i + 1]; od[i + 2] = db[i + 2]; od[i + 3] = 255; }
+  }
+  const oc = document.createElement("canvas"); oc.width = W; oc.height = H; oc.getContext("2d").putImageData(out, 0, 0);
+  return { dataURL: oc.toDataURL("image/jpeg", 0.85), pctChanged: changed / (W * H) * 100 };
+}
 async function callAPI(parts, retries = 2, apiKey = "") {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -1984,6 +2002,8 @@ function LabPage({ apiKey, lockCheckId }) {
   const [ocr, setOcr] = useState(null);
   const [zoomRunning, setZoomRunning] = useState(false);
   const [zoomInfo, setZoomInfo] = useState(null);
+  const [diffRunning, setDiffRunning] = useState(false);
+  const [diff, setDiff] = useState(null);
 
   const check = SVERKA_CHECKS.find(c => c.id === checkId) || SVERKA_CHECKS[0];
   const isCompare = sverkaIsComparison(checkId);
@@ -2015,6 +2035,10 @@ function LabPage({ apiKey, lockCheckId }) {
       if (ocr && ocr.text && ocr.meanConf >= 55) {
         parts.push({ type: "text", text: `OCR-ТЕКСТ (детерміновано зчитано з зображень, впевненість ~${ocr.meanConf}%, БЕЗ галюцинацій):\n${ocr.text}\n\nПравки про написи / номери / лого / текст звіряй саме з цим OCR-текстом. НЕ вигадуй тексту, якого тут немає.` });
       }
+      if (isCompare && diff && diff.dataURL && diff.pctChanged <= 55) {
+        parts.push({ type: "text", text: `DIFF-МАПА (наступне зображення) — це РЕНДЕР ПІСЛЯ з ЧЕРВОНОЮ підсвіткою пікселів, що відрізняються від ДО (змінено ~${diff.pctChanged.toFixed(1)}% кадру). Орієнтуйся на неї: якщо зона правки червона — там реально сталася зміна; якщо зона НЕ підсвічена — найімовірніше правку НЕ застосовано.` });
+        parts.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: diff.dataURL.split(",")[1] } });
+      }
       const p = await callAPI(parts, 1, apiKey);
       const obj = (p && p.sverka && p.sverka[0]) || p || {};
       const nChanges = Array.isArray(obj.changes) ? obj.changes.map(c => ({ ...c, zone: c.zone ? normalizeZone(c.zone) : null, conf: typeof c.conf === "number" ? c.conf : null })) : obj.changes;
@@ -2023,7 +2047,7 @@ function LabPage({ apiKey, lockCheckId }) {
       setResult({ error: e.message, _ms: Math.round(Date.now() - t0) });
     }
     setRunning(false);
-  }, [apiKey, isCompare, rFile, aFile, visFiles, dFile, docLabel, tzText, check, ocr]);
+  }, [apiKey, isCompare, rFile, aFile, visFiles, dFile, docLabel, tzText, check, ocr, diff]);
 
   const runOcr = useCallback(async () => {
     const toURL = pg => pg?.b64 ? `data:image/jpeg;base64,${pg.b64}` : (pg?.preview || null);
@@ -2080,6 +2104,15 @@ function LabPage({ apiKey, lockCheckId }) {
     }
     setZoomRunning(false);
   }, [result, aFile, rFile, check, apiKey]);
+
+  const runDiff = useCallback(async () => {
+    const a = aFile?.pages?.[0]?.b64, b = rFile?.pages?.[0]?.b64;
+    if (!a || !b) { setDiff({ error: "Потрібні обидва рендери — ДО і ПІСЛЯ" }); return; }
+    setDiffRunning(true); setDiff(null);
+    try { setDiff(await diffRenders(b, a)); }
+    catch (e) { setDiff({ error: e.message }); }
+    setDiffRunning(false);
+  }, [aFile, rFile]);
 
   const cfg = result && !result.error ? (SVERKA_STATUS[result.status] || SVERKA_STATUS.unchecked) : null;
   // зона малюється на ПІСЛЯ (для порівняння) або на єдиному рендері
@@ -2218,6 +2251,29 @@ function LabPage({ apiKey, lockCheckId }) {
             )}
             {ocr?.error && <div style={{ fontSize: 10, color: "var(--fail)" }}>❌ {ocr.error}</div>}
           </div>
+
+          {isCompare && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <button className="vp-btn" onClick={runDiff} disabled={diffRunning || !(aFile && rFile)} style={{ padding: "7px 12px", fontSize: 11, borderColor: "var(--fail)", color: "var(--fail)" }}>
+                  {diffRunning ? "🟥 Рахую diff…" : "🟥 Diff ДО/ПІСЛЯ"}
+                </button>
+                <span style={{ fontSize: 9, color: "var(--dim2)", fontFamily: "var(--font-mono)" }}>підсвітити де саме змінилось — менше хибних тривог</span>
+              </div>
+              {diff && !diff.error && (
+                <div className="vp-panel" style={{ padding: 8, fontFamily: "var(--font-mono)", fontSize: 10 }}>
+                  <div style={{ color: "var(--dim2)", marginBottom: 6, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <span>змінено ~{diff.pctChanged.toFixed(1)}% кадру</span>
+                    {diff.pctChanged <= 55
+                      ? <span style={{ color: "var(--ok)" }}>→ піде в аналіз як мапа уваги</span>
+                      : <span style={{ color: "var(--warn)" }}>⚠ забагато змін (різні ракурси?) — у промпт не піде</span>}
+                  </div>
+                  <img src={diff.dataURL} alt="diff" style={{ width: "100%", borderRadius: 6, display: "block" }} />
+                </div>
+              )}
+              {diff?.error && <div style={{ fontSize: 10, color: "var(--fail)" }}>❌ {diff.error}</div>}
+            </div>
+          )}
 
           <button className="vp-btn--primary" onClick={run} disabled={running || !canRun} style={{ padding: 15, borderRadius: 11, fontSize: 13, cursor: running || !canRun ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
             {running ? <><span style={{ width: 12, height: 12, border: "1.5px solid rgba(255,255,255,.4)", borderTop: "1.5px solid #fff", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />ПЕРЕВІРЯЮ…</> : isCompare ? "ПОРІВНЯТИ ПРАВКИ →" : "ПЕРЕВІРИТИ ПУНКТ →"}
