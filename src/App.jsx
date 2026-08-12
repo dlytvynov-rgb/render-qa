@@ -49,6 +49,24 @@ function ocrFlags(text, words) {
   return { placeholder, lowConf };
 }
 
+// ─── ZIP / завантаження кейса ───────────────────────────────────────────────────
+async function loadJSZip() {
+  if (window.JSZip) return window.JSZip;
+  await new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+    s.onload = res; s.onerror = () => rej(new Error("Не вдалось завантажити JSZip"));
+    document.head.appendChild(s);
+  });
+  return window.JSZip;
+}
+function b64ToU8(b64) { const bin = atob(b64); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob); const a = document.createElement("a");
+  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
 // ─── PDF.js ───────────────────────────────────────────────────────────────────
 async function loadPdfJs() {
   if (window.pdfjsLib) return window.pdfjsLib;
@@ -364,7 +382,8 @@ function useFileList(zoneKey) {
     ref.current = ref.current.map(x => x._id === id ? { ...x, _docType: docType || null } : x);
     bump();
   }, [bump]);
-  return { files: ref.current, ref, add, remove, addDone, updateTag, updateDocType };
+  const clear = useCallback(() => { ref.current = []; bump(); }, [bump]);
+  return { files: ref.current, ref, add, remove, addDone, clear, updateTag, updateDocType };
 }
 
 let _dragging = null; // { file: processedFileObj, remove: fn }
@@ -2004,6 +2023,9 @@ function LabPage({ apiKey, lockCheckId }) {
   const [zoomInfo, setZoomInfo] = useState(null);
   const [diffRunning, setDiffRunning] = useState(false);
   const [diff, setDiff] = useState(null);
+  const [caseBusy, setCaseBusy] = useState(false);
+  const [caseMsg, setCaseMsg] = useState(null);
+  const [baseline, setBaseline] = useState(null);
 
   const check = SVERKA_CHECKS.find(c => c.id === checkId) || SVERKA_CHECKS[0];
   const isCompare = sverkaIsComparison(checkId);
@@ -2155,8 +2177,8 @@ function LabPage({ apiKey, lockCheckId }) {
   const f1 = (2 * M.TP + M.FP + M.FN) ? 2 * M.TP / (2 * M.TP + M.FP + M.FN) : 1;
   const acc = total ? (M.TP + M.TN) / total : 1; // частка вірних вердиктів AI (усі вірні / всього)
   const pct = v => v == null ? "—" : `${Math.round(v * 100)}%`;
-  const exportXlsx = async () => {
-    const XLSX = await loadXLSX();
+  const stampNow = () => new Date().toISOString().slice(0, 19).replace("T", "_").replace(/:/g, "-");
+  const buildWb = (XLSX) => {
     const cases = runLog.map((e, i) => ({ "#": i + 1, "Час": e.ts, "Пункт": e.checkId, "Правка": e.change, "AI: виконано?": e.done, "Насправді": e.real, "Клас": e.cls }));
     const summary = [
       { "Метрика": "Всього оцінено", "Значення": total },
@@ -2171,16 +2193,65 @@ function LabPage({ apiKey, lockCheckId }) {
     ];
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.json_to_sheet(cases.length ? cases : [{ "#": "" }]);
-    // Зведений підсумок одразу під списком кейсів — щоб було видно без переходу на інший аркуш
-    XLSX.utils.sheet_add_aoa(ws, [
-      [],
-      ["ПІДСУМОК"],
-      ...summary.map(m => [m["Метрика"], m["Значення"]]),
-    ], { origin: `A${cases.length + 2}` });
+    XLSX.utils.sheet_add_aoa(ws, [[], ["ПІДСУМОК"], ...summary.map(m => [m["Метрика"], m["Значення"]])], { origin: `A${cases.length + 2}` });
     XLSX.utils.book_append_sheet(wb, ws, "Кейси");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summary), "Метрики");
-    const stamp = new Date().toISOString().slice(0, 19).replace("T", "_").replace(/:/g, "-");
-    XLSX.writeFile(wb, `render-qa-todo-test_${stamp}.xlsx`);
+    return wb;
+  };
+  const exportXlsx = async () => { const XLSX = await loadXLSX(); XLSX.writeFile(buildWb(XLSX), `render-qa-todo-test_${stampNow()}.xlsx`); };
+
+  // Зберегти весь кейс у .zip: входи (ДО/ПІСЛЯ/візуальний ту-ду) + текст + Excel з F-score + case.json (для повторного прогону)
+  const exportCase = async () => {
+    setCaseBusy(true); setCaseMsg(null);
+    try {
+      const [JSZip, XLSX] = await Promise.all([loadJSZip(), loadXLSX()]);
+      const zip = new JSZip();
+      const done = api => api.files.filter(f => f._done && !f._error);
+      const manifest = { v: 1, ts: new Date().toISOString(), checkId: check.id, todoText: tzText, slots: {}, changes: result?.changes || [], evals: runLog, metrics: { TP: M.TP, FP: M.FP, FN: M.FN, TN: M.TN, total, precision: pct(prec), recall: pct(rec), f1: pct(f1), accuracy: pct(acc) } };
+      const addSlot = (name, files) => {
+        manifest.slots[name] = files.map((f, fi) => ({
+          filename: f.filename, type: f.type || "image",
+          pages: (f.pages || []).filter(p => p.b64).map((p, pi) => { const path = `${name}/${fi}_${pi}.jpg`; zip.file(path, b64ToU8(p.b64)); return path; }),
+        }));
+      };
+      addSlot("before", done(render)); addSlot("after", done(after)); addSlot("visual-todo", done(todoVis));
+      if (tzText.trim()) zip.file("todo.txt", tzText);
+      if (runLog.length) zip.file("results.xlsx", XLSX.write(buildWb(XLSX), { type: "array", bookType: "xlsx" }));
+      zip.file("case.json", JSON.stringify(manifest, null, 2));
+      const blob = await zip.generateAsync({ type: "blob" });
+      downloadBlob(blob, `render-qa-case_${stampNow()}.zip`);
+      const n = ["before", "after", "visual-todo"].reduce((s, k) => s + manifest.slots[k].length, 0);
+      setCaseMsg({ ok: `Кейс збережено · ${n} зобр.${runLog.length ? " + Excel" : ""}` });
+    } catch (e) { setCaseMsg({ error: e.message }); }
+    setCaseBusy(false);
+  };
+
+  // Завантажити збережений кейс: відновити всі входи в слоти + підтягнути попередні метрики як baseline
+  const importCase = async (file) => {
+    if (!file) return;
+    setCaseBusy(true); setCaseMsg(null);
+    try {
+      const JSZip = await loadJSZip();
+      const zip = await JSZip.loadAsync(file);
+      const mf = zip.file("case.json");
+      const manifest = mf ? JSON.parse(await mf.async("string")) : { slots: {} };
+      render.clear(); after.clear(); todoVis.clear();
+      const todoFile = zip.file("todo.txt");
+      setTzText(todoFile ? await todoFile.async("string") : (manifest.todoText || ""));
+      const restore = async (name, api) => {
+        for (const f of manifest.slots?.[name] || []) {
+          const pages = [];
+          for (const path of f.pages || []) { const pf = zip.file(path); if (!pf) continue; const b64 = await pf.async("base64"); pages.push({ b64, preview: `data:image/jpeg;base64,${b64}` }); }
+          if (pages.length) api.addDone({ filename: f.filename || `${name}.jpg`, type: f.type || "image", preview: pages[0].preview, pages, _done: true });
+        }
+      };
+      await restore("before", render); await restore("after", after); await restore("visual-todo", todoVis);
+      setResult(null); setOcr(null); setDiff(null); setZoomInfo(null);
+      if (manifest.metrics) setBaseline({ ...manifest.metrics, ts: manifest.ts });
+      const n = ["before", "after", "visual-todo"].reduce((s, k) => s + ((manifest.slots?.[k] || []).length), 0);
+      setCaseMsg({ ok: `Завантажено · ${n} зобр.${manifest.metrics ? ` · попередній F1 ${manifest.metrics.f1}` : ""}. Тисни ПОРІВНЯТИ.` });
+    } catch (e) { setCaseMsg({ error: "Не вдалось прочитати кейс: " + e.message }); }
+    setCaseBusy(false);
   };
   const anns = result && !result.error && result.zone
     ? [{ ...result, _src: "sverka", _srcIdx: 0, _label: check.id.slice(1), comment: check.label }]
@@ -2201,6 +2272,21 @@ function LabPage({ apiKey, lockCheckId }) {
             <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: "-0.02em" }}>{isCompare ? "Порівняння ДО / ПІСЛЯ" : "Тест одного пункту"}</div>
             <div style={{ fontSize: 12.5, color: "var(--dim2)", marginTop: 5, lineHeight: 1.55 }}>{isCompare ? "Завантаж два рендери — до і після правок — і список змін. Claude звірить, чи кожну правку застосовано." : "Завантаж рендер і документ, обери пункт — Claude звірить тільки його й покаже вердикт, зону та сирий JSON."}</div>
           </div>
+
+          {isCompare && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <label className="vp-btn" style={{ padding: "7px 12px", fontSize: 11, cursor: caseBusy ? "wait" : "pointer", borderColor: "var(--cyan)", color: "var(--cyan)", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  {caseBusy ? "⏳ …" : "⬆ Завантажити кейс (.zip)"}
+                  <input type="file" accept=".zip,application/zip" disabled={caseBusy} style={{ display: "none" }} onChange={e => { const f = e.target.files[0]; e.target.value = ""; importCase(f); }} />
+                </label>
+                <span style={{ fontSize: 9, color: "var(--dim2)", fontFamily: "var(--font-mono)" }}>перезапустити збережений кейс і порівняти точність</span>
+              </div>
+              {caseMsg?.ok && <div style={{ fontSize: 10, color: "var(--ok)", fontFamily: "var(--font-mono)" }}>✓ {caseMsg.ok}</div>}
+              {caseMsg?.error && <div style={{ fontSize: 10, color: "var(--fail)", fontFamily: "var(--font-mono)" }}>❌ {caseMsg.error}</div>}
+              {baseline && <div style={{ fontSize: 10, color: "var(--vio)", fontFamily: "var(--font-mono)" }}>◷ попередній прогін: F1 {baseline.f1} · Acc {baseline.accuracy} · N {baseline.total}</div>}
+            </div>
+          )}
 
           {!lockCheckId && (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -2323,10 +2409,14 @@ function LabPage({ apiKey, lockCheckId }) {
                         N {total} · <b style={{ color: "var(--ok)" }}>TP {M.TP}</b> · <b style={{ color: "var(--fail)" }}>FP {M.FP}</b> · <b style={{ color: "var(--fail)" }}>FN {M.FN}</b> · <span style={{ color: "var(--dim2)" }}>TN {M.TN}</span> · P {pct(prec)} · R {pct(rec)} · <b>F1 {pct(f1)}</b> · <b style={{ color: "var(--vio)" }}>Acc {pct(acc)}</b>
                       </span>
                     )}
+                    {baseline && total > 0 && (
+                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--vio)" }} title={`Попередній прогін (${(baseline.ts || "").slice(0, 16).replace("T", " ")})`}>◷ було: F1 {baseline.f1} · Acc {baseline.accuracy}</span>
+                    )}
                     <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
                       <button className="vp-btn" onClick={runZoom} disabled={zoomRunning || zoomEligible === 0} title="Кроп зони кожної сумнівної/флагнутої правки з оригіналу + переперевірка зблизька (+1 виклик на правку)" style={{ padding: "3px 9px", fontSize: 9, borderColor: "var(--vio)", color: "var(--vio)" }}>
                         {zoomRunning ? `🔬 ${zoomInfo?.done || 0}/${zoomInfo?.total || 0}…` : `🔬 Уточнити зумом (${zoomEligible})`}
                       </button>
+                      <button className="vp-btn" onClick={exportCase} disabled={caseBusy} title="Зберегти весь кейс у .zip: ДО/ПІСЛЯ + візуальний ту-ду + текст + Excel з F-score (для повторного прогону)" style={{ padding: "3px 9px", fontSize: 9, borderColor: "var(--cyan)", color: "var(--cyan)" }}>{caseBusy ? "⏳" : "⬇ кейс"}</button>
                       <button className="vp-btn" onClick={exportXlsx} disabled={!total} style={{ padding: "3px 9px", fontSize: 9, borderColor: total ? "var(--ok)" : "var(--line2)", color: total ? "var(--ok)" : "var(--dim2)" }}>⬇ xlsx ({total})</button>
                       <button className="vp-btn" onClick={resetLog} disabled={!total} style={{ padding: "3px 9px", fontSize: 9 }} title="Скинути лог">↺</button>
                     </span>
