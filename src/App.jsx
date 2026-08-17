@@ -2138,15 +2138,15 @@ function LabPage({ apiKey, lockCheckId }) {
   }, [computeOcr]);
 
   const zoomEligible = (result?.changes || []).filter(c => c.done !== "yes" || (typeof c.conf === "number" && c.conf < 70)).length;
-  const runZoom = useCallback(async () => {
+  const runZoom = useCallback(async (all = false) => {
     if (!result || !Array.isArray(result.changes) || !result.changes.length) return;
     const aB64 = aFile?.pages?.[0]?.b64;
     const bB64 = rFile?.pages?.[0]?.b64 || aB64;
-    if (!aB64) { setZoomInfo({ error: "Немає ПІСЛЯ-рендера для зуму" }); return; }
-    const idxs = result.changes
-      .map((c, i) => [c, i]).filter(([c]) => c.done !== "yes" || (typeof c.conf === "number" && c.conf < 70))
-      .map(([, i]) => i).slice(0, 8);
-    if (!idxs.length) { setZoomInfo({ error: "Немає сумнівних/флагнутих правок для уточнення" }); return; }
+    if (!aB64) { setZoomInfo({ error: "Немає ПІСЛЯ-рендера для перевірки" }); return; }
+    const idxs = all
+      ? result.changes.map((_, i) => i).slice(0, 12)
+      : result.changes.map((c, i) => [c, i]).filter(([c]) => c.done !== "yes" || (typeof c.conf === "number" && c.conf < 70)).map(([, i]) => i).slice(0, 8);
+    if (!idxs.length) { setZoomInfo({ error: all ? "Немає пунктів для перевірки" : "Немає сумнівних/флагнутих правок для уточнення" }); return; }
     setZoomRunning(true); setZoomInfo({ done: 0, total: idxs.length });
     const next = result.changes.slice();
     for (let k = 0; k < idxs.length; k++) {
@@ -2474,8 +2474,11 @@ function LabPage({ apiKey, lockCheckId }) {
                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--vio)" }} title={`Попередній прогін (${(baseline.ts || "").slice(0, 16).replace("T", " ")})`}>◷ було: F1 {baseline.f1} · Acc {baseline.accuracy}</span>
                     )}
                     <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-                      <button className="vp-btn" onClick={runZoom} disabled={zoomRunning || zoomEligible === 0} title="Кроп зони кожної сумнівної/флагнутої правки з оригіналу + переперевірка зблизька (+1 виклик на правку)" style={{ padding: "3px 9px", fontSize: 9, borderColor: "var(--vio)", color: "var(--vio)" }}>
-                        {zoomRunning ? `🔬 ${zoomInfo?.done || 0}/${zoomInfo?.total || 0}…` : `🔬 Уточнити зумом (${zoomEligible})`}
+                      <button className="vp-btn" onClick={() => runZoom(true)} disabled={zoomRunning || !(result.changes && result.changes.length)} title="Кожен пункт — окремий фокусний виклик з кропом його зони ДО+ПІСЛЯ (найточніше; 1 виклик на пункт)" style={{ padding: "3px 9px", fontSize: 9, borderColor: "var(--vio)", color: "var(--vio)", fontWeight: 600 }}>
+                        {zoomRunning ? `🎯 ${zoomInfo?.done || 0}/${zoomInfo?.total || 0}…` : `🎯 По пунктах (${result.changes.length})`}
+                      </button>
+                      <button className="vp-btn" onClick={() => runZoom(false)} disabled={zoomRunning || zoomEligible === 0} title="Дешевше: фокусна перевірка лише сумнівних/флагнутих (conf<70)" style={{ padding: "3px 9px", fontSize: 9, borderColor: "var(--line2)", color: "var(--dim)" }}>
+                        {zoomRunning ? "…" : `🔬 лише сумнівні (${zoomEligible})`}
                       </button>
                       <button className="vp-btn" onClick={exportCase} disabled={caseBusy} title="Зберегти весь кейс у .zip: ДО/ПІСЛЯ + візуальний ту-ду + текст + Excel з F-score (для повторного прогону)" style={{ padding: "3px 9px", fontSize: 9, borderColor: "var(--cyan)", color: "var(--cyan)" }}>{caseBusy ? "⏳" : "⬇ кейс"}</button>
                       <a href="https://drive.google.com/drive/folders/1i6tYEvLZghD8ctpIq_TqxBKs2reiyNzn?usp=sharing" target="_blank" rel="noopener noreferrer" className="vp-btn" title="Спільна папка — залий сюди збережений .zip" style={{ padding: "3px 9px", fontSize: 9, borderColor: "var(--cyan)", color: "var(--cyan)", textDecoration: "none" }}>📁 папка</a>
