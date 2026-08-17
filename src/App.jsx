@@ -2026,6 +2026,7 @@ function LabPage({ apiKey, lockCheckId }) {
   const [caseBusy, setCaseBusy] = useState(false);
   const [caseMsg, setCaseMsg] = useState(null);
   const [baseline, setBaseline] = useState(null);
+  const [caseName, setCaseName] = useState("");
 
   const check = SVERKA_CHECKS.find(c => c.id === checkId) || SVERKA_CHECKS[0];
   const isCompare = sverkaIsComparison(checkId);
@@ -2217,7 +2218,7 @@ function LabPage({ apiKey, lockCheckId }) {
       const [JSZip, XLSX] = await Promise.all([loadJSZip(), loadXLSX()]);
       const zip = new JSZip();
       const done = api => api.files.filter(f => f._done && !f._error);
-      const manifest = { v: 1, ts: new Date().toISOString(), checkId: check.id, todoText: tzText, slots: {}, changes: result?.changes || [], evals: runLog, metrics: { TP: M.TP, FP: M.FP, FN: M.FN, TN: M.TN, total, precision: pct(prec), recall: pct(rec), f1: pct(f1), accuracy: pct(acc) } };
+      const manifest = { v: 1, ts: new Date().toISOString(), name: caseName.trim() || null, checkId: check.id, todoText: tzText, slots: {}, changes: result?.changes || [], evals: runLog, metrics: { TP: M.TP, FP: M.FP, FN: M.FN, TN: M.TN, total, precision: pct(prec), recall: pct(rec), f1: pct(f1), accuracy: pct(acc) } };
       const addSlot = (name, files) => {
         manifest.slots[name] = files.map((f, fi) => ({
           filename: f.filename, type: f.type || "image",
@@ -2229,7 +2230,8 @@ function LabPage({ apiKey, lockCheckId }) {
       if (runLog.length) zip.file("results.xlsx", XLSX.write(buildWb(XLSX), { type: "array", bookType: "xlsx" }));
       zip.file("case.json", JSON.stringify(manifest, null, 2));
       const blob = await zip.generateAsync({ type: "blob" });
-      downloadBlob(blob, `render-qa-case_${stampNow()}.zip`);
+      const slug = caseName.trim().replace(/[^\p{L}\p{N}_-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 60);
+      downloadBlob(blob, `${slug ? slug + "_" : "render-qa-case_"}${stampNow()}.zip`);
       const n = ["before", "after", "visual-todo"].reduce((s, k) => s + manifest.slots[k].length, 0);
       setCaseMsg({ ok: `Кейс збережено · ${n} зобр.${runLog.length ? " + Excel" : ""}` });
     } catch (e) { setCaseMsg({ error: e.message }); }
@@ -2257,6 +2259,7 @@ function LabPage({ apiKey, lockCheckId }) {
       };
       await restore("before", render); await restore("after", after); await restore("visual-todo", todoVis);
       setResult(null); setOcr(null); setDiff(null); setZoomInfo(null);
+      setCaseName(manifest.name || "");
       if (manifest.metrics) setBaseline({ ...manifest.metrics, ts: manifest.ts });
       const n = ["before", "after", "visual-todo"].reduce((s, k) => s + ((manifest.slots?.[k] || []).length), 0);
       setCaseMsg({ ok: `Завантажено · ${n} зобр.${manifest.metrics ? ` · попередній F1 ${manifest.metrics.f1}` : ""}. Тисни ПОРІВНЯТИ.` });
@@ -2289,21 +2292,25 @@ function LabPage({ apiKey, lockCheckId }) {
               <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, lineHeight: 1.7, color: "var(--dim)" }}>
                 <li>Завантаж <b style={{ color: "var(--text)" }}>ДО / ПІСЛЯ</b> + ту-ду → <b style={{ color: "var(--text)" }}>ПОРІВНЯТИ ПРАВКИ</b> <span style={{ color: "var(--dim2)" }}>(OCR і diff увімкнуться самі)</span></li>
                 <li>На кожній правці признач <b style={{ color: "var(--text)" }}>«Насправді»</b> ✅ / ⚠ / ❌ — це і рахує F-score</li>
-                <li>Тисни <b style={{ color: "var(--text)" }}>«⬇ кейс»</b> — завантажиться .zip з обома рендерами, ту-ду й Excel</li>
+                <li>Тисни <b style={{ color: "var(--text)" }}>«⬇ Зберегти кейс»</b> (зелена, зліва) — завантажиться .zip з обома рендерами, ту-ду й Excel</li>
                 <li>Залий цей .zip у спільну папку → <a href="https://drive.google.com/drive/folders/1i6tYEvLZghD8ctpIq_TqxBKs2reiyNzn?usp=sharing" target="_blank" rel="noopener noreferrer" style={{ color: "var(--cyan)", fontWeight: 600 }}>📁 Google Drive</a></li>
               </ol>
             </div>
           )}
 
           {isCompare && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <input className="vp-input" value={caseName} onChange={e => setCaseName(e.target.value)} placeholder="Назва кейса (напр. StaggGroup bathroom) — для назви файлу, опційно" style={{ width: "100%", padding: "8px 11px", fontSize: 12 }} />
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <label className="vp-btn" style={{ padding: "7px 12px", fontSize: 11, cursor: caseBusy ? "wait" : "pointer", borderColor: "var(--cyan)", color: "var(--cyan)", display: "inline-flex", alignItems: "center", gap: 6 }}>
-                  {caseBusy ? "⏳ …" : "⬆ Завантажити кейс (.zip)"}
+                <button className="vp-btn" onClick={exportCase} disabled={caseBusy || !aFile} title="Створити .zip: ДО/ПІСЛЯ + візуальний ту-ду + текст + Excel з F-score" style={{ padding: "8px 13px", fontSize: 12, fontWeight: 600, borderColor: (caseBusy || !aFile) ? "var(--line2)" : "var(--ok)", color: (caseBusy || !aFile) ? "var(--dim2)" : "var(--ok)" }}>
+                  {caseBusy ? "⏳ …" : "⬇ Зберегти кейс (.zip)"}
+                </button>
+                <label className="vp-btn" style={{ padding: "8px 13px", fontSize: 12, cursor: caseBusy ? "wait" : "pointer", borderColor: "var(--cyan)", color: "var(--cyan)", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  📂 Відкрити кейс
                   <input type="file" accept=".zip,application/zip" disabled={caseBusy} style={{ display: "none" }} onChange={e => { const f = e.target.files[0]; e.target.value = ""; importCase(f); }} />
                 </label>
-                <span style={{ fontSize: 9, color: "var(--dim2)", fontFamily: "var(--font-mono)" }}>перезапустити збережений кейс і порівняти точність</span>
               </div>
+              <span style={{ fontSize: 9, color: "var(--dim2)", fontFamily: "var(--font-mono)" }}>Зберегти = створити архів тесту (качається на комп) · Відкрити = перезапустити збережений і порівняти точність</span>
               {caseMsg?.ok && <div style={{ fontSize: 10, color: "var(--ok)", fontFamily: "var(--font-mono)" }}>✓ {caseMsg.ok}</div>}
               {caseMsg?.error && <div style={{ fontSize: 10, color: "var(--fail)", fontFamily: "var(--font-mono)" }}>❌ {caseMsg.error}</div>}
               {baseline && <div style={{ fontSize: 10, color: "var(--vio)", fontFamily: "var(--font-mono)" }}>◷ попередній прогін: F1 {baseline.f1} · Acc {baseline.accuracy} · N {baseline.total}</div>}
