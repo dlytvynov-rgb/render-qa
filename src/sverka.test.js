@@ -189,6 +189,23 @@ describe("sverkaZoomComparePrompt", () => {
   });
 });
 
+describe("правило про вхідні дані (анти-галюцинація, референси = еталон)", () => {
+  const cmp = SVERKA_CHECKS.find(c => c.id === "S13");
+  const single = SVERKA_CHECKS.find(c => c.id === "S10");
+  it("є в compare / single / zoom промптах: не відкидати входи, референс=еталон, не вигадувати", () => {
+    for (const p of [
+      sverkaSingleComparePrompt(cmp, "x", "", false),
+      sverkaSinglePrompt(single, "doc", "", ""),
+      sverkaZoomComparePrompt(cmp, "x", false),
+    ]) {
+      expect(p).toMatch(/не відкидай нічого/i);
+      expect(p).toMatch(/референс|еталон/i);
+      expect(p).toMatch(/НЕ вигадуй/);
+      expect(p).toMatch(/«не стосується»/);
+    }
+  });
+});
+
 describe("SVERKA_STATUS", () => {
   it("має конфіг для всіх п'яти статусів", () => {
     for (const s of ["ok", "warn", "fail", "no_material", "unchecked"])
