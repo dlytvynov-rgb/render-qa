@@ -2036,6 +2036,26 @@ function LabPage({ apiKey, lockCheckId }) {
   const docLabel = dFile ? `${DOC_TYPES[dFile._docType] || "Документ"} · ${dFile.filename}` : "";
   const canRun = isCompare ? (rFile && aFile) : rFile;
 
+  const computeOcr = useCallback(async () => {
+    const toURL = pg => pg?.b64 ? `data:image/jpeg;base64,${pg.b64}` : (pg?.preview || null);
+    const srcs = [];
+    if (isCompare && aFile) srcs.push(["ПІСЛЯ", toURL(aFile.pages?.[0]) || aFile.preview]);
+    if (!isCompare && rFile) srcs.push(["РЕНДЕР", toURL(rFile.pages?.[0]) || rFile.preview]);
+    visFiles.forEach((f, i) => (f.pages || []).forEach((p, pi) => { const u = toURL(p); if (u) srcs.push([`ВІЗУАЛЬНИЙ ${i + 1}${f.pages.length > 1 ? "." + (pi + 1) : ""}`, u]); }));
+    const valid = srcs.filter(s => s[1]);
+    if (!valid.length) return null;
+    const blocks = []; let allWords = [];
+    for (const [lbl, src] of valid) { const r = await runOCR(src, "eng"); if (r.text) { blocks.push(`[${lbl}] ${r.text}`); allWords = allWords.concat(r.words); } }
+    const text = blocks.join("\n").trim();
+    const meanConf = allWords.length ? Math.round(allWords.reduce((s, w) => s + w.conf, 0) / allWords.length) : 0;
+    return { text, meanConf, flags: ocrFlags(text, allWords), n: valid.length };
+  }, [isCompare, aFile, rFile, visFiles]);
+  const computeDiff = useCallback(async () => {
+    const a = aFile?.pages?.[0]?.b64, b = rFile?.pages?.[0]?.b64;
+    if (!a || !b) return null;
+    return await diffRenders(b, a);
+  }, [aFile, rFile]);
+
   const run = useCallback(async () => {
     if (!apiKey.trim()) { setResult({ error: "Введи Anthropic API ключ у ⚙ справа вгорі" }); return; }
     if (isCompare && (!rFile || !aFile)) { setResult({ error: "Завантаж обидва рендери — ДО і ПІСЛЯ" }); return; }
@@ -2043,6 +2063,12 @@ function LabPage({ apiKey, lockCheckId }) {
     setRunning(true); setResult(null);
     const t0 = Date.now();
     try {
+      // OCR + diff рахуються автоматично в проході (тестеру нічого окремо тиснути не треба)
+      let ocrLocal = null, diffLocal = null;
+      if (isCompare) {
+        try { ocrLocal = await computeOcr(); if (ocrLocal) setOcr(ocrLocal); } catch { /* OCR не критичний */ }
+        try { diffLocal = await computeDiff(); if (diffLocal) setDiff(diffLocal); } catch { /* diff не критичний */ }
+      }
       let parts;
       if (isCompare) {
         parts = [{ type: "text", text: sverkaSingleComparePrompt(check, tzText, ZONE_PROMPT, visFiles.length > 0) }];
@@ -2054,12 +2080,12 @@ function LabPage({ apiKey, lockCheckId }) {
         parts.push(...filesToParts([rFile], "РЕНДЕР"));
         if (dFile) parts.push(...filesToParts([dFile], "ДОКУМЕНТ"));
       }
-      if (ocr && ocr.text && ocr.meanConf >= 55) {
-        parts.push({ type: "text", text: `OCR-ТЕКСТ (детерміновано зчитано з зображень, впевненість ~${ocr.meanConf}%, БЕЗ галюцинацій):\n${ocr.text}\n\nПравки про написи / номери / лого / текст звіряй саме з цим OCR-текстом. НЕ вигадуй тексту, якого тут немає.` });
+      if (ocrLocal && ocrLocal.text && ocrLocal.meanConf >= 55) {
+        parts.push({ type: "text", text: `OCR-ТЕКСТ (детерміновано зчитано з зображень, впевненість ~${ocrLocal.meanConf}%, БЕЗ галюцинацій):\n${ocrLocal.text}\n\nПравки про написи / номери / лого / текст звіряй саме з цим OCR-текстом. НЕ вигадуй тексту, якого тут немає.` });
       }
-      if (isCompare && diff && diff.dataURL && diff.pctChanged <= 55) {
-        parts.push({ type: "text", text: `DIFF-МАПА (наступне зображення) — це РЕНДЕР ПІСЛЯ з ЧЕРВОНОЮ підсвіткою пікселів, що відрізняються від ДО (змінено ~${diff.pctChanged.toFixed(1)}% кадру). Орієнтуйся на неї: якщо зона правки червона — там реально сталася зміна; якщо зона НЕ підсвічена — найімовірніше правку НЕ застосовано.` });
-        parts.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: diff.dataURL.split(",")[1] } });
+      if (isCompare && diffLocal && diffLocal.dataURL && diffLocal.pctChanged <= 55) {
+        parts.push({ type: "text", text: `DIFF-МАПА (наступне зображення) — це РЕНДЕР ПІСЛЯ з ЧЕРВОНОЮ підсвіткою пікселів, що відрізняються від ДО (змінено ~${diffLocal.pctChanged.toFixed(1)}% кадру). Орієнтуйся на неї: якщо зона правки червона — там реально сталася зміна; якщо зона НЕ підсвічена — найімовірніше правку НЕ застосовано.` });
+        parts.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: diffLocal.dataURL.split(",")[1] } });
       }
       const p = await callAPI(parts, 1, apiKey);
       const obj = (p && p.sverka && p.sverka[0]) || p || {};
@@ -2069,29 +2095,14 @@ function LabPage({ apiKey, lockCheckId }) {
       setResult({ error: e.message, _ms: Math.round(Date.now() - t0) });
     }
     setRunning(false);
-  }, [apiKey, isCompare, rFile, aFile, visFiles, dFile, docLabel, tzText, check, ocr, diff]);
+  }, [apiKey, isCompare, rFile, aFile, visFiles, dFile, docLabel, tzText, check, computeOcr, computeDiff]);
 
   const runOcr = useCallback(async () => {
-    const toURL = pg => pg?.b64 ? `data:image/jpeg;base64,${pg.b64}` : (pg?.preview || null);
-    const srcs = [];
-    if (isCompare && aFile) srcs.push(["ПІСЛЯ", toURL(aFile.pages?.[0]) || aFile.preview]);
-    if (!isCompare && rFile) srcs.push(["РЕНДЕР", toURL(rFile.pages?.[0]) || rFile.preview]);
-    visFiles.forEach((f, i) => (f.pages || []).forEach((p, pi) => { const u = toURL(p); if (u) srcs.push([`ВІЗУАЛЬНИЙ ${i + 1}${f.pages.length > 1 ? "." + (pi + 1) : ""}`, u]); }));
-    const valid = srcs.filter(s => s[1]);
-    if (!valid.length) { setOcr({ error: "Немає зображення для OCR" }); return; }
     setOcrRunning(true); setOcr(null);
-    try {
-      const blocks = []; let allWords = [];
-      for (const [lbl, src] of valid) {
-        const r = await runOCR(src, "eng");
-        if (r.text) { blocks.push(`[${lbl}] ${r.text}`); allWords = allWords.concat(r.words); }
-      }
-      const text = blocks.join("\n").trim();
-      const meanConf = allWords.length ? Math.round(allWords.reduce((s, w) => s + w.conf, 0) / allWords.length) : 0;
-      setOcr({ text, meanConf, flags: ocrFlags(text, allWords), n: valid.length });
-    } catch (e) { setOcr({ error: e.message }); }
+    try { const r = await computeOcr(); setOcr(r || { error: "Немає зображення для OCR" }); }
+    catch (e) { setOcr({ error: e.message }); }
     setOcrRunning(false);
-  }, [isCompare, aFile, rFile, visFiles]);
+  }, [computeOcr]);
 
   const zoomEligible = (result?.changes || []).filter(c => c.done !== "yes" || (typeof c.conf === "number" && c.conf < 70)).length;
   const runZoom = useCallback(async () => {
@@ -2131,10 +2142,9 @@ function LabPage({ apiKey, lockCheckId }) {
     const a = aFile?.pages?.[0]?.b64, b = rFile?.pages?.[0]?.b64;
     if (!a || !b) { setDiff({ error: "Потрібні обидва рендери — ДО і ПІСЛЯ" }); return; }
     setDiffRunning(true); setDiff(null);
-    try { setDiff(await diffRenders(b, a)); }
-    catch (e) { setDiff({ error: e.message }); }
+    try { setDiff(await computeDiff()); } catch (e) { setDiff({ error: e.message }); }
     setDiffRunning(false);
-  }, [aFile, rFile]);
+  }, [aFile, rFile, computeDiff]);
 
   const cfg = result && !result.error ? (SVERKA_STATUS[result.status] || SVERKA_STATUS.unchecked) : null;
   // зона малюється на ПІСЛЯ (для порівняння) або на єдиному рендері
@@ -2274,6 +2284,18 @@ function LabPage({ apiKey, lockCheckId }) {
           </div>
 
           {isCompare && (
+            <div className="vp-panel" style={{ padding: "12px 14px", borderColor: "var(--vio)", display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.1em", color: "var(--vio)" }}>📋 ЯК ТЕСТУВАТИ (для F-score)</div>
+              <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, lineHeight: 1.7, color: "var(--dim)" }}>
+                <li>Завантаж <b style={{ color: "var(--text)" }}>ДО / ПІСЛЯ</b> + ту-ду → <b style={{ color: "var(--text)" }}>ПОРІВНЯТИ ПРАВКИ</b> <span style={{ color: "var(--dim2)" }}>(OCR і diff увімкнуться самі)</span></li>
+                <li>На кожній правці признач <b style={{ color: "var(--text)" }}>«Насправді»</b> ✅ / ⚠ / ❌ — це і рахує F-score</li>
+                <li>Тисни <b style={{ color: "var(--text)" }}>«⬇ кейс»</b> — завантажиться .zip з обома рендерами, ту-ду й Excel</li>
+                <li>Залий цей .zip у спільну папку → <a href="https://drive.google.com/drive/folders/1i6tYEvLZghD8ctpIq_TqxBKs2reiyNzn?usp=sharing" target="_blank" rel="noopener noreferrer" style={{ color: "var(--cyan)", fontWeight: 600 }}>📁 Google Drive</a></li>
+              </ol>
+            </div>
+          )}
+
+          {isCompare && (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <label className="vp-btn" style={{ padding: "7px 12px", fontSize: 11, cursor: caseBusy ? "wait" : "pointer", borderColor: "var(--cyan)", color: "var(--cyan)", display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -2322,7 +2344,7 @@ function LabPage({ apiKey, lockCheckId }) {
               <button className="vp-btn" onClick={runOcr} disabled={ocrRunning || !(aFile || visFiles.length || (!isCompare && rFile))} style={{ padding: "7px 12px", fontSize: 11 }}>
                 {ocrRunning ? "🔎 Розпізнаю…" : "🔎 OCR тексту (Tesseract)"}
               </button>
-              <span style={{ fontSize: 9, color: "var(--dim2)", fontFamily: "var(--font-mono)" }}>детермінований чит написів/номерів — анти-галюцинація</span>
+              <span style={{ fontSize: 9, color: "var(--dim2)", fontFamily: "var(--font-mono)" }}>працює автоматично при аналізі · кнопка = попередній перегляд</span>
             </div>
             {ocr && !ocr.error && (
               <div className="vp-panel" style={{ padding: "8px 10px", fontFamily: "var(--font-mono)", fontSize: 10 }}>
@@ -2344,7 +2366,7 @@ function LabPage({ apiKey, lockCheckId }) {
                 <button className="vp-btn" onClick={runDiff} disabled={diffRunning || !(aFile && rFile)} style={{ padding: "7px 12px", fontSize: 11, borderColor: "var(--fail)", color: "var(--fail)" }}>
                   {diffRunning ? "🟥 Рахую diff…" : "🟥 Diff ДО/ПІСЛЯ"}
                 </button>
-                <span style={{ fontSize: 9, color: "var(--dim2)", fontFamily: "var(--font-mono)" }}>підсвітити де саме змінилось — менше хибних тривог</span>
+                <span style={{ fontSize: 9, color: "var(--dim2)", fontFamily: "var(--font-mono)" }}>працює автоматично при аналізі · кнопка = попередній перегляд</span>
               </div>
               {diff && !diff.error && (
                 <div className="vp-panel" style={{ padding: 8, fontFamily: "var(--font-mono)", fontSize: 10 }}>
@@ -2417,6 +2439,7 @@ function LabPage({ apiKey, lockCheckId }) {
                         {zoomRunning ? `🔬 ${zoomInfo?.done || 0}/${zoomInfo?.total || 0}…` : `🔬 Уточнити зумом (${zoomEligible})`}
                       </button>
                       <button className="vp-btn" onClick={exportCase} disabled={caseBusy} title="Зберегти весь кейс у .zip: ДО/ПІСЛЯ + візуальний ту-ду + текст + Excel з F-score (для повторного прогону)" style={{ padding: "3px 9px", fontSize: 9, borderColor: "var(--cyan)", color: "var(--cyan)" }}>{caseBusy ? "⏳" : "⬇ кейс"}</button>
+                      <a href="https://drive.google.com/drive/folders/1i6tYEvLZghD8ctpIq_TqxBKs2reiyNzn?usp=sharing" target="_blank" rel="noopener noreferrer" className="vp-btn" title="Спільна папка — залий сюди збережений .zip" style={{ padding: "3px 9px", fontSize: 9, borderColor: "var(--cyan)", color: "var(--cyan)", textDecoration: "none" }}>📁 папка</a>
                       <button className="vp-btn" onClick={exportXlsx} disabled={!total} style={{ padding: "3px 9px", fontSize: 9, borderColor: total ? "var(--ok)" : "var(--line2)", color: total ? "var(--ok)" : "var(--dim2)" }}>⬇ xlsx ({total})</button>
                       <button className="vp-btn" onClick={resetLog} disabled={!total} style={{ padding: "3px 9px", fontSize: 9 }} title="Скинути лог">↺</button>
                     </span>
