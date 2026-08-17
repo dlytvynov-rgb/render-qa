@@ -92,22 +92,54 @@ async function pdfToPages(file, onProg, sig) {
   for (let i = 1; i <= n; i++) {
     if (sig?.aborted) throw new DOMException("Aborted", "AbortError");
     const page = await pdf.getPage(i);
+
+    // ── Текст (реконструкція layout по рядках) + анотації / форми / коменти клієнта ──
+    let pageText = null, textRich = false, hasFormFields = false, hasImages = false;
+    try {
+      const [tc, annotations, opList] = await Promise.all([
+        page.getTextContent(),
+        page.getAnnotations().catch(() => []),
+        page.getOperatorList().catch(() => null),
+      ]);
+      if (opList) { const IMG = new Set([82, 83, 84]); hasImages = opList.fnArray.some(op => IMG.has(op)); }
+      if (tc.items.length) {
+        const TOL = 4, buckets = new Map();
+        for (const it of tc.items) { if (!it.str) continue; const y = Math.round(it.transform[5] / TOL); if (!buckets.has(y)) buckets.set(y, []); buckets.get(y).push({ x: it.transform[4], str: it.str }); }
+        const lines = [...buckets.entries()].sort((a, b) => b[0] - a[0]).map(([, its]) => { its.sort((a, b) => a.x - b.x); return its.map(o => o.str).join("").replace(/\s{2,}/g, " ").trim(); }).filter(l => l);
+        const rec = lines.join("\n");
+        if (rec.length > 20) { pageText = rec.slice(0, 8000); textRich = rec.length > 150; }
+      }
+      const annLines = [];
+      for (const ann of annotations) {
+        if (ann.subtype === "Widget") {
+          const val = ann.fieldValue, name = ann.alternativeText || ann.fieldName || "";
+          if (ann.checkBox || ann.radioButton) { if (val && val !== "Off" && val !== "") { annLines.push(`☑ ${name}: ${val}`); hasFormFields = true; } }
+          else if (ann.fieldType === "Tx" && val) { annLines.push(`[ПОЛЕ] ${name}: ${val}`); hasFormFields = true; }
+          else if (ann.fieldType === "Ch" && val) { annLines.push(`[ВИБІР] ${name}: ${val}`); hasFormFields = true; }
+        } else if ((ann.subtype === "Text" || ann.subtype === "FreeText") && ann.contents) {
+          annLines.push(`[КОМЕНТАР КЛІЄНТА] ${ann.contents}`);
+        }
+      }
+      if (annLines.length) pageText = (pageText ? pageText + "\n\n" : "") + "АНОТАЦІЇ / ФОРМА:\n" + annLines.join("\n");
+    } catch { /* ignore */ }
+
+    // ── Рендер сторінки в картинку (scale-to-fit під довгу сторону, без обрізання) ──
     const base = page.getViewport({ scale: 1 });
-    const scale = Math.min(maxDim / base.width, maxDim / base.height, 3); // не роздувати дрібні PDF надміру
+    const scale = Math.min(maxDim / base.width, maxDim / base.height, 3);
     const vp = page.getViewport({ scale });
     const canvas = document.createElement("canvas");
     canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
     await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+
+    // ── OCR-fallback для сканів (текст-шар порожній) — через наш Tesseract ──
+    if (!textRich && (!pageText || pageText.trim().length < 30)) {
+      try { const r = await runOCR(canvas.toDataURL("image/jpeg", 0.92), "eng"); if (r.text && r.text.length > 20 && r.meanConf >= 50) pageText = ("[OCR]\n" + r.text).slice(0, 8000); }
+      catch { /* OCR недоступний — лишаємо тільки картинку */ }
+    }
+
     let qq = q, b64 = canvas.toDataURL("image/jpeg", qq).split(",")[1];
     while (b64.length * 0.75 > 4.5e6 && qq > 0.35) { qq -= 0.08; b64 = canvas.toDataURL("image/jpeg", qq).split(",")[1]; }
-    // Extract text layer per page — annotations/labels that reference visual elements on this page
-    let pageText = null;
-    try {
-      const tc = await page.getTextContent();
-      const raw = tc.items.map(it => it.str || "").join(" ").replace(/\s{3,}/g, "  ").trim();
-      if (raw.length > 10) pageText = raw.slice(0, 4000);
-    } catch { /* ignore */ }
-    pages.push({ b64, preview: canvas.toDataURL("image/jpeg", Math.min(qq, 0.75)), text: pageText });
+    pages.push({ b64, preview: canvas.toDataURL("image/jpeg", Math.min(qq, 0.75)), text: pageText, _textRich: textRich, _hasImages: hasImages, _hasFormFields: hasFormFields });
     onProg?.(Math.round(i / n * 100));
   }
   return { pages, type: "pdf", filename: file.name };
