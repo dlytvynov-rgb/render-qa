@@ -2413,7 +2413,7 @@ function LabPage({ apiKey, lockCheckId }) {
                     <span>змінено ~{diff.pctChanged.toFixed(1)}% кадру</span>
                     {diff.pctChanged <= 55
                       ? <span style={{ color: "var(--ok)" }}>→ піде в аналіз як мапа уваги</span>
-                      : <span style={{ color: "var(--warn)" }}>⚠ забагато змін (різні ракурси?) — у промпт не піде</span>}
+                      : <span style={{ color: "var(--warn)" }}>⚠ багато змін (мабуть, змінено ракурс/композицію) — мапу не додаю, але звірка ДО/ПІСЛЯ працює як завжди</span>}
                   </div>
                   <img src={diff.dataURL} alt="diff" style={{ width: "100%", borderRadius: 6, display: "block" }} />
                 </div>

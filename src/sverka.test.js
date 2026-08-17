@@ -202,6 +202,10 @@ describe("правило про вхідні дані (анти-галюцина
       expect(p).toMatch(/референс|еталон/i);
       expect(p).toMatch(/НЕ вигадуй/);
       expect(p).toMatch(/«не стосується»/);
+      // правило про референси
+      expect(p).toMatch(/повного копіювання/);
+      expect(p).toMatch(/по-атрибутно/);
+      expect(p).toMatch(/об'єкт\/меблі/);
     }
   });
 });
