@@ -2038,6 +2038,9 @@ const TODO_TEST_ONLY = true;
 const TESTLOG_KEY = "rqa_todo_testlog";
 function loadTestLog() { try { return JSON.parse(localStorage.getItem(TESTLOG_KEY)) || []; } catch { return []; } }
 function saveTestLog(log) { try { localStorage.setItem(TESTLOG_KEY, JSON.stringify(log)); } catch { /* ignore */ } }
+const COMMENTS_KEY = "rqa_todo_comments";
+function loadComments() { try { return JSON.parse(localStorage.getItem(COMMENTS_KEY)) || {}; } catch { return {}; } }
+function saveComments(c) { try { localStorage.setItem(COMMENTS_KEY, JSON.stringify(c)); } catch { /* ignore */ } }
 
 function LabPage({ apiKey, lockCheckId }) {
   const render = useFileList("lab-render");
@@ -2195,9 +2198,10 @@ function LabPage({ apiKey, lockCheckId }) {
   const [log, setLog] = useState(loadTestLog);
   const recordEval = (runId, idx, change, real) => {
     const caseId = `${runId}:${idx}`;
-    const aiFlagged = change.done !== "yes"; // AI сказав «не виконано/частково»
-    const realProblem = real !== "yes";      // насправді є недороб
-    const cls = aiFlagged ? (realProblem ? "TP" : "FP") : (realProblem ? "FN" : "TN");
+    // Міряємо ТОЧНІСТЬ ДЕТЕКЦІЇ AI: позитив = «виконано». TP = зроблено і AI побачив.
+    const aiDone = change.done === "yes";  // AI визначив пункт як «виконано»
+    const reallyDone = real === "yes";     // насправді виконано
+    const cls = aiDone ? (reallyDone ? "TP" : "FP") : (reallyDone ? "FN" : "TN");
     setLog(prev => {
       const next = prev.filter(e => e.caseId !== caseId);
       next.push({ caseId, ts: new Date().toISOString(), checkId: check.id, change: change.text, done: change.done, real, cls });
@@ -2206,6 +2210,12 @@ function LabPage({ apiKey, lockCheckId }) {
   };
   const evalOf = (runId, idx) => log.find(e => e.caseId === `${runId}:${idx}`);
   const resetLog = () => { setLog([]); saveTestLog([]); };
+  const [comments, setComments] = useState(loadComments);
+  const commentOf = (runId, idx) => comments[`${runId}:${idx}`] || "";
+  const setComment = (runId, idx, text) => {
+    const caseId = `${runId}:${idx}`;
+    setComments(prev => { const next = { ...prev }; if (text.trim()) next[caseId] = text; else delete next[caseId]; saveComments(next); return next; });
+  };
   // Метрики та експорт — лише по ПОТОЧНОМУ прогону (кожна генерація окремо, не змішуємо запуски)
   const runLog = (result && result._runId != null)
     ? log.filter(e => e.caseId && e.caseId.startsWith(result._runId + ":"))
@@ -2213,31 +2223,28 @@ function LabPage({ apiKey, lockCheckId }) {
   const M = { TP: 0, FP: 0, FN: 0, TN: 0 };
   runLog.forEach(e => { if (M[e.cls] != null) M[e.cls]++; });
   const total = runLog.length;
-  // Вироджені випадки (ділення 0/0) трактуємо як «немає помилок → ідеально»:
-  // немає позитивів і немає пропусків → 100%; є реальні недороби, але AI нічого не флагнув → 0%.
-  // F1/Recall мають сенс ЛИШЕ коли в наборі є реальні недороби (є що «ловити»).
-  // Якщо всі правки реально виконані — F1/Recall незастосовні (n/a), головна метрика = Accuracy.
-  const anyDefect = (M.TP + M.FN) > 0; // є хоч один реальний недороб
-  const anyFlag = (M.TP + M.FP) > 0;   // AI хоч щось флагнув
-  const prec = anyFlag ? M.TP / (M.TP + M.FP) : null;               // n/a, якщо AI нічого не флагнув
-  const rec = anyDefect ? M.TP / (M.TP + M.FN) : null;              // n/a, якщо нема реальних недоробів
-  const f1 = anyDefect ? 2 * M.TP / (2 * M.TP + M.FP + M.FN) : null; // F1 лише коли є що ловити
+  // Позитив = «виконано». F1/Recall мають сенс, коли в наборі є реально виконані пункти (є що детектувати).
+  const anyDone = (M.TP + M.FN) > 0;   // є хоч один реально виконаний пункт (позитив)
+  const anyAIDone = (M.TP + M.FP) > 0; // AI хоч щось назвав «виконано»
+  const prec = anyAIDone ? M.TP / (M.TP + M.FP) : null;             // з названих «виконано» — скільки реально виконані
+  const rec = anyDone ? M.TP / (M.TP + M.FN) : null;                // зі всіх реально виконаних — скільки AI ПОБАЧИВ
+  const f1 = anyDone ? 2 * M.TP / (2 * M.TP + M.FP + M.FN) : null;   // F1 лише коли є реально виконані пункти
   const acc = total ? (M.TP + M.TN) / total : null;                 // частка вірних вердиктів AI — головна
   const pct = v => v == null ? "n/a" : `${Math.round(v * 100)}%`;
   const stampNow = () => new Date().toISOString().slice(0, 19).replace("T", "_").replace(/:/g, "-");
   const buildWb = (XLSX) => {
-    const cases = runLog.map((e, i) => ({ "#": i + 1, "Час": e.ts, "Пункт": e.checkId, "Правка": e.change, "AI: виконано?": e.done, "Насправді": e.real, "Клас": e.cls }));
+    const cases = runLog.map((e, i) => ({ "#": i + 1, "Час": e.ts, "Пункт": e.checkId, "Правка": e.change, "AI: виконано?": e.done, "Насправді": e.real, "Клас": e.cls, "Коментар": comments[e.caseId] || "" }));
     const summary = [
       { "Метрика": "Всього оцінено", "Значення": total },
-      { "Метрика": "TP — вірно флагнув недороб", "Значення": M.TP },
-      { "Метрика": "FP — хибна тривога", "Значення": M.FP },
-      { "Метрика": "FN — пропустив недороб", "Значення": M.FN },
-      { "Метрика": "TN — вірно не флагнув", "Значення": M.TN },
+      { "Метрика": "TP — правильно побачив виконане", "Значення": M.TP },
+      { "Метрика": "FP — назвав виконаним, а насправді ні", "Значення": M.FP },
+      { "Метрика": "FN — НЕ побачив виконане (перестраховка)", "Значення": M.FN },
+      { "Метрика": "TN — правильно сказав, що не виконано", "Значення": M.TN },
       { "Метрика": "Precision", "Значення": pct(prec) },
       { "Метрика": "Recall", "Значення": pct(rec) },
       { "Метрика": "F1-score", "Значення": pct(f1) },
       { "Метрика": "Accuracy", "Значення": pct(acc) },
-      ...(anyDefect ? [] : [{ "Метрика": "Примітка", "Значення": "нема реальних недоробів у наборі → F1/Recall незастосовні; головне — Accuracy (частка вірних вердиктів) і Precision (частка хибних тривог)" }]),
+      ...(anyDone ? [] : [{ "Метрика": "Примітка", "Значення": "у наборі нема реально виконаних пунктів → F1/Recall незастосовні; головне — Accuracy (частка вірних вердиктів AI)" }]),
     ];
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.json_to_sheet(cases.length ? cases : [{ "#": "" }]);
@@ -2255,7 +2262,7 @@ function LabPage({ apiKey, lockCheckId }) {
       const [JSZip, XLSX] = await Promise.all([loadJSZip(), loadXLSX()]);
       const zip = new JSZip();
       const done = api => api.files.filter(f => f._done && !f._error);
-      const manifest = { v: 1, ts: new Date().toISOString(), name: caseName.trim() || null, checkId: check.id, todoText: tzText, slots: {}, changes: result?.changes || [], evals: runLog, metrics: { TP: M.TP, FP: M.FP, FN: M.FN, TN: M.TN, total, precision: pct(prec), recall: pct(rec), f1: pct(f1), accuracy: pct(acc) } };
+      const manifest = { v: 1, ts: new Date().toISOString(), name: caseName.trim() || null, checkId: check.id, todoText: tzText, slots: {}, changes: result?.changes || [], evals: runLog, comments: Object.fromEntries(runLog.map(e => [e.change, comments[e.caseId]]).filter(([, c]) => c)), metrics: { TP: M.TP, FP: M.FP, FN: M.FN, TN: M.TN, total, precision: pct(prec), recall: pct(rec), f1: pct(f1), accuracy: pct(acc) } };
       const addSlot = (name, files) => {
         manifest.slots[name] = files.map((f, fi) => ({
           filename: f.filename, type: f.type || "image",
@@ -2475,8 +2482,8 @@ function LabPage({ apiKey, lockCheckId }) {
                         N {total} · <b style={{ color: "var(--ok)" }}>TP {M.TP}</b> · <b style={{ color: "var(--fail)" }}>FP {M.FP}</b> · <b style={{ color: "var(--fail)" }}>FN {M.FN}</b> · <span style={{ color: "var(--dim2)" }}>TN {M.TN}</span> · P {pct(prec)} · R {pct(rec)} · <b>F1 {pct(f1)}</b> · <b style={{ color: "var(--vio)" }}>Acc {pct(acc)}</b>
                       </span>
                     )}
-                    {total > 0 && !anyDefect && (
-                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--warn)" }} title="У цьому наборі всі правки реально виконані — реальних недоробів нема, тож F1/Recall нема що міряти. Орієнтуйся на Accuracy (частка вірних вердиктів) і Precision (частка хибних тривог).">◦ нема реальних недоробів → F1/R незастосовні, дивись Acc</span>
+                    {total > 0 && !anyDone && (
+                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--warn)" }} title="У цьому наборі жоден пункт реально не виконаний — детектувати «виконане» нема чого, тож F1/Recall незастосовні. Орієнтуйся на Accuracy (частка вірних вердиктів AI).">◦ нема реально виконаних пунктів → F1/R незастосовні, дивись Acc</span>
                     )}
                     {baseline && total > 0 && (
                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--vio)" }} title={`Попередній прогін (${(baseline.ts || "").slice(0, 16).replace("T", " ")})`}>◷ було: F1 {baseline.f1} · Acc {baseline.accuracy}</span>
@@ -2514,6 +2521,7 @@ function LabPage({ apiKey, lockCheckId }) {
                           })}
                           {ev && <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 700, color: ev.cls === "TP" ? "var(--ok)" : ev.cls === "TN" ? "var(--dim2)" : "var(--fail)" }}>{ev.cls}</span>}
                         </div>
+                        <input value={commentOf(result._runId, i)} onChange={e => setComment(result._runId, i, e.target.value)} placeholder="💬 коментар: що не так / що покращити (піде в Excel)" style={{ marginLeft: 23, width: "calc(100% - 23px)", fontFamily: "var(--font-mono)", fontSize: 10, padding: "4px 8px", borderRadius: 6, border: `1px solid ${commentOf(result._runId, i) ? "var(--vio)" : "var(--line2)"}`, background: "var(--void)", color: "var(--text)", outline: "none", boxSizing: "border-box" }} />
                       </div>
                     );
                   })}
