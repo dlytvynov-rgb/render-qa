@@ -2215,11 +2215,15 @@ function LabPage({ apiKey, lockCheckId }) {
   const total = runLog.length;
   // Вироджені випадки (ділення 0/0) трактуємо як «немає помилок → ідеально»:
   // немає позитивів і немає пропусків → 100%; є реальні недороби, але AI нічого не флагнув → 0%.
-  const prec = (M.TP + M.FP) ? M.TP / (M.TP + M.FP) : (M.FN ? 0 : 1);
-  const rec = (M.TP + M.FN) ? M.TP / (M.TP + M.FN) : 1;
-  const f1 = (2 * M.TP + M.FP + M.FN) ? 2 * M.TP / (2 * M.TP + M.FP + M.FN) : 1;
-  const acc = total ? (M.TP + M.TN) / total : 1; // частка вірних вердиктів AI (усі вірні / всього)
-  const pct = v => v == null ? "—" : `${Math.round(v * 100)}%`;
+  // F1/Recall мають сенс ЛИШЕ коли в наборі є реальні недороби (є що «ловити»).
+  // Якщо всі правки реально виконані — F1/Recall незастосовні (n/a), головна метрика = Accuracy.
+  const anyDefect = (M.TP + M.FN) > 0; // є хоч один реальний недороб
+  const anyFlag = (M.TP + M.FP) > 0;   // AI хоч щось флагнув
+  const prec = anyFlag ? M.TP / (M.TP + M.FP) : null;               // n/a, якщо AI нічого не флагнув
+  const rec = anyDefect ? M.TP / (M.TP + M.FN) : null;              // n/a, якщо нема реальних недоробів
+  const f1 = anyDefect ? 2 * M.TP / (2 * M.TP + M.FP + M.FN) : null; // F1 лише коли є що ловити
+  const acc = total ? (M.TP + M.TN) / total : null;                 // частка вірних вердиктів AI — головна
+  const pct = v => v == null ? "n/a" : `${Math.round(v * 100)}%`;
   const stampNow = () => new Date().toISOString().slice(0, 19).replace("T", "_").replace(/:/g, "-");
   const buildWb = (XLSX) => {
     const cases = runLog.map((e, i) => ({ "#": i + 1, "Час": e.ts, "Пункт": e.checkId, "Правка": e.change, "AI: виконано?": e.done, "Насправді": e.real, "Клас": e.cls }));
@@ -2233,6 +2237,7 @@ function LabPage({ apiKey, lockCheckId }) {
       { "Метрика": "Recall", "Значення": pct(rec) },
       { "Метрика": "F1-score", "Значення": pct(f1) },
       { "Метрика": "Accuracy", "Значення": pct(acc) },
+      ...(anyDefect ? [] : [{ "Метрика": "Примітка", "Значення": "нема реальних недоробів у наборі → F1/Recall незастосовні; головне — Accuracy (частка вірних вердиктів) і Precision (частка хибних тривог)" }]),
     ];
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.json_to_sheet(cases.length ? cases : [{ "#": "" }]);
@@ -2469,6 +2474,9 @@ function LabPage({ apiKey, lockCheckId }) {
                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--dim)" }}>
                         N {total} · <b style={{ color: "var(--ok)" }}>TP {M.TP}</b> · <b style={{ color: "var(--fail)" }}>FP {M.FP}</b> · <b style={{ color: "var(--fail)" }}>FN {M.FN}</b> · <span style={{ color: "var(--dim2)" }}>TN {M.TN}</span> · P {pct(prec)} · R {pct(rec)} · <b>F1 {pct(f1)}</b> · <b style={{ color: "var(--vio)" }}>Acc {pct(acc)}</b>
                       </span>
+                    )}
+                    {total > 0 && !anyDefect && (
+                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--warn)" }} title="У цьому наборі всі правки реально виконані — реальних недоробів нема, тож F1/Recall нема що міряти. Орієнтуйся на Accuracy (частка вірних вердиктів) і Precision (частка хибних тривог).">◦ нема реальних недоробів → F1/R незастосовні, дивись Acc</span>
                     )}
                     {baseline && total > 0 && (
                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--vio)" }} title={`Попередній прогін (${(baseline.ts || "").slice(0, 16).replace("T", " ")})`}>◷ було: F1 {baseline.f1} · Acc {baseline.accuracy}</span>
