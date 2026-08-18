@@ -2196,12 +2196,15 @@ function LabPage({ apiKey, lockCheckId }) {
     ["partial", "⚠ Частково", "var(--warn)", "rgba(245,158,11,.15)"],
   ];
   const [log, setLog] = useState(loadTestLog);
+  // Клас рахуємо на льоту з (done, real), а НЕ зі збереженого поля — щоб він не протухав при зміні полярності.
+  // Позитив = «виконано»: TP = зроблено і AI побачив, FN = зроблено, але AI перестрахувався.
+  const classify = (done, real) => {
+    const ai = done === "yes", rd = real === "yes";
+    return ai ? (rd ? "TP" : "FP") : (rd ? "FN" : "TN");
+  };
   const recordEval = (runId, idx, change, real) => {
     const caseId = `${runId}:${idx}`;
-    // Міряємо ТОЧНІСТЬ ДЕТЕКЦІЇ AI: позитив = «виконано». TP = зроблено і AI побачив.
-    const aiDone = change.done === "yes";  // AI визначив пункт як «виконано»
-    const reallyDone = real === "yes";     // насправді виконано
-    const cls = aiDone ? (reallyDone ? "TP" : "FP") : (reallyDone ? "FN" : "TN");
+    const cls = classify(change.done, real);  // зберігаємо для сумісності, але показ/метрики рахують заново
     setLog(prev => {
       const next = prev.filter(e => e.caseId !== caseId);
       next.push({ caseId, ts: new Date().toISOString(), checkId: check.id, change: change.text, done: change.done, real, cls });
@@ -2221,7 +2224,7 @@ function LabPage({ apiKey, lockCheckId }) {
     ? log.filter(e => e.caseId && e.caseId.startsWith(result._runId + ":"))
     : log;
   const M = { TP: 0, FP: 0, FN: 0, TN: 0 };
-  runLog.forEach(e => { if (M[e.cls] != null) M[e.cls]++; });
+  runLog.forEach(e => { const c = classify(e.done, e.real); if (M[c] != null) M[c]++; });
   const total = runLog.length;
   // Позитив = «виконано». F1/Recall мають сенс, коли в наборі є реально виконані пункти (є що детектувати).
   const anyDone = (M.TP + M.FN) > 0;   // є хоч один реально виконаний пункт (позитив)
@@ -2233,7 +2236,7 @@ function LabPage({ apiKey, lockCheckId }) {
   const pct = v => v == null ? "n/a" : `${Math.round(v * 100)}%`;
   const stampNow = () => new Date().toISOString().slice(0, 19).replace("T", "_").replace(/:/g, "-");
   const buildWb = (XLSX) => {
-    const cases = runLog.map((e, i) => ({ "#": i + 1, "Час": e.ts, "Пункт": e.checkId, "Правка": e.change, "AI: виконано?": e.done, "Насправді": e.real, "Клас": e.cls, "Коментар": comments[e.caseId] || "" }));
+    const cases = runLog.map((e, i) => ({ "#": i + 1, "Час": e.ts, "Пункт": e.checkId, "Правка": e.change, "AI: виконано?": e.done, "Насправді": e.real, "Клас": classify(e.done, e.real), "Коментар": comments[e.caseId] || "" }));
     const summary = [
       { "Метрика": "Всього оцінено", "Значення": total },
       { "Метрика": "TP — правильно побачив виконане", "Значення": M.TP },
@@ -2262,7 +2265,7 @@ function LabPage({ apiKey, lockCheckId }) {
       const [JSZip, XLSX] = await Promise.all([loadJSZip(), loadXLSX()]);
       const zip = new JSZip();
       const done = api => api.files.filter(f => f._done && !f._error);
-      const manifest = { v: 1, ts: new Date().toISOString(), name: caseName.trim() || null, checkId: check.id, todoText: tzText, slots: {}, changes: result?.changes || [], evals: runLog, comments: Object.fromEntries(runLog.map(e => [e.change, comments[e.caseId]]).filter(([, c]) => c)), metrics: { TP: M.TP, FP: M.FP, FN: M.FN, TN: M.TN, total, precision: pct(prec), recall: pct(rec), f1: pct(f1), accuracy: pct(acc) } };
+      const manifest = { v: 1, ts: new Date().toISOString(), name: caseName.trim() || null, checkId: check.id, todoText: tzText, slots: {}, changes: result?.changes || [], evals: runLog.map(e => ({ ...e, cls: classify(e.done, e.real) })), comments: Object.fromEntries(runLog.map(e => [e.change, comments[e.caseId]]).filter(([, c]) => c)), metrics: { TP: M.TP, FP: M.FP, FN: M.FN, TN: M.TN, total, precision: pct(prec), recall: pct(rec), f1: pct(f1), accuracy: pct(acc) } };
       const addSlot = (name, files) => {
         manifest.slots[name] = files.map((f, fi) => ({
           filename: f.filename, type: f.type || "image",
@@ -2505,6 +2508,7 @@ function LabPage({ apiKey, lockCheckId }) {
                   {result.changes.map((c, i) => {
                     const dc = DONE_CFG[c.done] || DONE_CFG.no;
                     const ev = evalOf(result._runId, i);
+                    const evCls = ev ? classify(ev.done, ev.real) : null;
                     return (
                       <div key={i} style={{ padding: "9px 16px", borderBottom: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 6 }}>
                         <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
@@ -2519,7 +2523,7 @@ function LabPage({ apiKey, lockCheckId }) {
                             const on = ev && ev.real === val;
                             return <button key={val} onClick={() => recordEval(result._runId, i, c, val)} style={{ fontFamily: "var(--font-mono)", fontSize: 10, padding: "3px 9px", borderRadius: 6, cursor: "pointer", border: `1px solid ${on ? col : "var(--line2)"}`, background: on ? bg : "transparent", color: on ? col : "var(--dim)" }}>{lbl}</button>;
                           })}
-                          {ev && <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 700, color: ev.cls === "TP" ? "var(--ok)" : ev.cls === "TN" ? "var(--dim2)" : "var(--fail)" }}>{ev.cls}</span>}
+                          {ev && <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 700, color: evCls === "TP" ? "var(--ok)" : evCls === "TN" ? "var(--dim2)" : "var(--fail)" }}>{evCls}</span>}
                         </div>
                         <input value={commentOf(result._runId, i)} onChange={e => setComment(result._runId, i, e.target.value)} placeholder="💬 коментар: що не так / що покращити (піде в Excel)" style={{ marginLeft: 23, width: "calc(100% - 23px)", fontFamily: "var(--font-mono)", fontSize: 10, padding: "4px 8px", borderRadius: 6, border: `1px solid ${commentOf(result._runId, i) ? "var(--vio)" : "var(--line2)"}`, background: "var(--void)", color: "var(--text)", outline: "none", boxSizing: "border-box" }} />
                       </div>
