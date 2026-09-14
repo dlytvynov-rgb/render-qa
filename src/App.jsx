@@ -2187,13 +2187,13 @@ function LabPage({ apiKey, lockCheckId }) {
   const rPrev = isCompare
     ? (aFile?.preview || aFile?.pages?.[0]?.preview)
     : (rFile?.preview || rFile?.pages?.[0]?.preview);
-  const DONE_CFG = { yes: { icon: "✅", color: "var(--ok)" }, partial: { icon: "⚠️", color: "var(--warn)" }, no: { icon: "❌", color: "var(--fail)" }, regressed: { icon: "🔻", color: "var(--fail)" } };
+  const DONE_CFG = { yes: { icon: "✅", color: "var(--ok)" }, partial: { icon: "⚠️", color: "var(--warn)" }, no: { icon: "❌", color: "var(--fail)" }, regressed: { icon: "🔻", color: "var(--fail)" }, needs_human: { icon: "🧑", color: "var(--vio)" } };
 
   // ── Тест-лог: реальний статус кожної правки → TP/FP/FN (Doc Nexus, без TN у метриках) ──
   const REAL_OPTS = [
     ["yes", "✅ Виконано", "var(--ok)", "rgba(34,197,94,.15)"],
     ["no", "❌ Ні", "var(--fail)", "rgba(239,68,68,.15)"],
-    ["partial", "⚠ Частково", "var(--warn)", "rgba(245,158,11,.15)"],
+    ["needs_human", "🧑 Потрібна людина", "var(--vio)", "rgba(139,92,246,.15)"],
   ];
   const [log, setLog] = useState(loadTestLog);
   // Клас рахуємо на льоту з (done, real), а НЕ зі збереженого поля — щоб він не протухав при зміні полярності.
@@ -2224,8 +2224,12 @@ function LabPage({ apiKey, lockCheckId }) {
     ? log.filter(e => e.caseId && e.caseId.startsWith(result._runId + ":"))
     : log;
   const M = { TP: 0, FP: 0, FN: 0, TN: 0 };
-  runLog.forEach(e => { const c = classify(e.done, e.real); if (M[c] != null) M[c]++; });
-  const total = runLog.length;
+  let needsHuman = 0;
+  runLog.forEach(e => {
+    if (e.done === "needs_human" || e.real === "needs_human") { needsHuman++; return; } // не рахуємо — не перевірно з рендера
+    const c = classify(e.done, e.real); if (M[c] != null) M[c]++;
+  });
+  const total = runLog.length - needsHuman; // оцінюємо лише ПЕРЕВІРНІ пункти
   // Позитив = «виконано». F1/Recall мають сенс, коли в наборі є реально виконані пункти (є що детектувати).
   const anyDone = (M.TP + M.FN) > 0;   // є хоч один реально виконаний пункт (позитив)
   const anyAIDone = (M.TP + M.FP) > 0; // AI хоч щось назвав «виконано»
@@ -2236,7 +2240,7 @@ function LabPage({ apiKey, lockCheckId }) {
   const pct = v => v == null ? "n/a" : `${Math.round(v * 100)}%`;
   const stampNow = () => new Date().toISOString().slice(0, 19).replace("T", "_").replace(/:/g, "-");
   const buildWb = (XLSX) => {
-    const cases = runLog.map((e, i) => ({ "#": i + 1, "Час": e.ts, "Пункт": e.checkId, "Правка": e.change, "AI: виконано?": e.done, "Насправді": e.real, "Клас": classify(e.done, e.real), "Коментар": comments[e.caseId] || "" }));
+    const cases = runLog.map((e, i) => ({ "#": i + 1, "Час": e.ts, "Пункт": e.checkId, "Правка": e.change, "AI: виконано?": e.done, "Насправді": e.real, "Клас": (e.done === "needs_human" || e.real === "needs_human") ? "потребує людини" : classify(e.done, e.real), "Коментар": comments[e.caseId] || "" }));
     const summary = [
       { "Метрика": "Всього оцінено", "Значення": total },
       { "Метрика": "TP — правильно побачив виконане", "Значення": M.TP },
@@ -2247,6 +2251,7 @@ function LabPage({ apiKey, lockCheckId }) {
       { "Метрика": "Recall", "Значення": pct(rec) },
       { "Метрика": "F1-score", "Значення": pct(f1) },
       { "Метрика": "Accuracy", "Значення": pct(acc) },
+      { "Метрика": "🧑 Потребує людини (виключено з F1)", "Значення": needsHuman },
       ...(anyDone ? [] : [{ "Метрика": "Примітка", "Значення": "у наборі нема реально виконаних пунктів → F1/Recall незастосовні; головне — Accuracy (частка вірних вердиктів AI)" }]),
     ];
     const wb = XLSX.utils.book_new();
@@ -2265,7 +2270,7 @@ function LabPage({ apiKey, lockCheckId }) {
       const [JSZip, XLSX] = await Promise.all([loadJSZip(), loadXLSX()]);
       const zip = new JSZip();
       const done = api => api.files.filter(f => f._done && !f._error);
-      const manifest = { v: 1, ts: new Date().toISOString(), name: caseName.trim() || null, checkId: check.id, todoText: tzText, slots: {}, changes: result?.changes || [], evals: runLog.map(e => ({ ...e, cls: classify(e.done, e.real) })), comments: Object.fromEntries(runLog.map(e => [e.change, comments[e.caseId]]).filter(([, c]) => c)), metrics: { TP: M.TP, FP: M.FP, FN: M.FN, TN: M.TN, total, precision: pct(prec), recall: pct(rec), f1: pct(f1), accuracy: pct(acc) } };
+      const manifest = { v: 1, ts: new Date().toISOString(), name: caseName.trim() || null, checkId: check.id, todoText: tzText, slots: {}, changes: result?.changes || [], evals: runLog.map(e => ({ ...e, cls: classify(e.done, e.real) })), comments: Object.fromEntries(runLog.map(e => [e.change, comments[e.caseId]]).filter(([, c]) => c)), metrics: { TP: M.TP, FP: M.FP, FN: M.FN, TN: M.TN, total, needsHuman, precision: pct(prec), recall: pct(rec), f1: pct(f1), accuracy: pct(acc) } };
       const addSlot = (name, files) => {
         manifest.slots[name] = files.map((f, fi) => ({
           filename: f.filename, type: f.type || "image",
@@ -2482,7 +2487,7 @@ function LabPage({ apiKey, lockCheckId }) {
                     <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, letterSpacing: "0.12em", color: "var(--dim2)" }}>ПРАВКИ ({result.changes.length})</span>
                     {total > 0 && (
                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--dim)" }}>
-                        N {total} · <b style={{ color: "var(--ok)" }}>TP {M.TP}</b> · <b style={{ color: "var(--fail)" }}>FP {M.FP}</b> · <b style={{ color: "var(--fail)" }}>FN {M.FN}</b> · <span style={{ color: "var(--dim2)" }}>TN {M.TN}</span> · P {pct(prec)} · R {pct(rec)} · <b>F1 {pct(f1)}</b> · <b style={{ color: "var(--vio)" }}>Acc {pct(acc)}</b>
+                        N {total} · <b style={{ color: "var(--ok)" }}>TP {M.TP}</b> · <b style={{ color: "var(--fail)" }}>FP {M.FP}</b> · <b style={{ color: "var(--fail)" }}>FN {M.FN}</b> · <span style={{ color: "var(--dim2)" }}>TN {M.TN}</span> · P {pct(prec)} · R {pct(rec)} · <b>F1 {pct(f1)}</b> · <b style={{ color: "var(--vio)" }}>Acc {pct(acc)}</b>{needsHuman > 0 && <> · <b style={{ color: "var(--vio)" }} title="потребує людини — виключено з F1/метрик">🧑 {needsHuman}</b></>}
                       </span>
                     )}
                     {total > 0 && !anyDone && (
@@ -2508,7 +2513,7 @@ function LabPage({ apiKey, lockCheckId }) {
                   {result.changes.map((c, i) => {
                     const dc = DONE_CFG[c.done] || DONE_CFG.no;
                     const ev = evalOf(result._runId, i);
-                    const evCls = ev ? classify(ev.done, ev.real) : null;
+                    const evCls = ev ? ((ev.done === "needs_human" || ev.real === "needs_human") ? "H" : classify(ev.done, ev.real)) : null;
                     return (
                       <div key={i} style={{ padding: "9px 16px", borderBottom: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 6 }}>
                         <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
@@ -2523,7 +2528,7 @@ function LabPage({ apiKey, lockCheckId }) {
                             const on = ev && ev.real === val;
                             return <button key={val} onClick={() => recordEval(result._runId, i, c, val)} style={{ fontFamily: "var(--font-mono)", fontSize: 10, padding: "3px 9px", borderRadius: 6, cursor: "pointer", border: `1px solid ${on ? col : "var(--line2)"}`, background: on ? bg : "transparent", color: on ? col : "var(--dim)" }}>{lbl}</button>;
                           })}
-                          {ev && <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 700, color: evCls === "TP" ? "var(--ok)" : evCls === "TN" ? "var(--dim2)" : "var(--fail)" }}>{evCls}</span>}
+                          {ev && <span title={evCls === "H" ? "потребує людини — виключено з F1" : ""} style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 700, color: evCls === "TP" ? "var(--ok)" : evCls === "TN" ? "var(--dim2)" : evCls === "H" ? "var(--vio)" : "var(--fail)" }}>{evCls === "H" ? "🧑" : evCls}</span>}
                         </div>
                         <input value={commentOf(result._runId, i)} onChange={e => setComment(result._runId, i, e.target.value)} placeholder="💬 коментар: що не так / що покращити (піде в Excel)" style={{ marginLeft: 23, width: "calc(100% - 23px)", fontFamily: "var(--font-mono)", fontSize: 10, padding: "4px 8px", borderRadius: 6, border: `1px solid ${commentOf(result._runId, i) ? "var(--vio)" : "var(--line2)"}`, background: "var(--void)", color: "var(--text)", outline: "none", boxSizing: "border-box" }} />
                       </div>
