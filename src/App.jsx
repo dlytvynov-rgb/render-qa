@@ -2126,7 +2126,7 @@ function LabPage({ apiKey, lockCheckId }) {
       const p = await callAPI(parts, 1, apiKey);
       const obj = (p && p.sverka && p.sverka[0]) || p || {};
       const nChanges = Array.isArray(obj.changes) ? obj.changes.map(c => ({ ...c, zone: c.zone ? normalizeZone(c.zone) : null, conf: typeof c.conf === "number" ? c.conf : null })) : obj.changes;
-      setResult({ ...obj, changes: nChanges, zone: obj.zone ? normalizeZone(obj.zone) : null, _ms: Math.round(Date.now() - t0), _runId: t0, _raw: p });
+      setResult({ ...obj, changes: nChanges, zone: obj.zone ? normalizeZone(obj.zone) : null, _ms: Math.round(Date.now() - t0), _runId: t0, _fresh: true, _raw: p });
     } catch (e) {
       setResult({ error: e.message, _ms: Math.round(Date.now() - t0) });
     }
@@ -2159,10 +2159,11 @@ function LabPage({ apiKey, lockCheckId }) {
         const beforeCrop = await cropRegion(bB64, zone);
         const afterCrop = await cropRegion(aB64, zone);
         const parts = [
-          { type: "text", text: sverkaZoomComparePrompt(check, c.text, false) },
+          { type: "text", text: sverkaZoomComparePrompt(check, c.text, visFiles.length > 0) },
           { type: "image", source: { type: "base64", media_type: "image/jpeg", data: beforeCrop.split(",")[1] } },
           { type: "image", source: { type: "base64", media_type: "image/jpeg", data: afterCrop.split(",")[1] } },
         ];
+        if (visFiles.length) parts.push(...filesToParts(visFiles, "ВІЗУАЛЬНИЙ ТУ-ДУ (референс-специфікація клієнта — знайди в ньому запис/еталон САМЕ для цієї правки й звір ПІСЛЯ з ним)"));
         const z = await callAPI(parts, 1, apiKey);
         next[i] = { ...c, done: z?.done || c.done, conf: typeof z?.conf === "number" ? z.conf : c.conf, _zoomed: true, _zoomNote: z?.note || "" };
       } catch (e) {
@@ -2172,7 +2173,18 @@ function LabPage({ apiKey, lockCheckId }) {
       setResult(r => ({ ...r, changes: next.slice() }));
     }
     setZoomRunning(false);
-  }, [result, aFile, rFile, check, apiKey]);
+  }, [result, aFile, rFile, check, apiKey, visFiles]);
+
+  // ── Фаза 2: авто фокусний пере-чек невпевнених пунктів (per-item + референс) одразу після компару ──
+  const autoZoomRef = useRef(null);
+  useEffect(() => {
+    if (isCompare && result && result._fresh && result._runId && !result.error && !zoomRunning
+        && Array.isArray(result.changes) && result.changes.length
+        && autoZoomRef.current !== result._runId) {
+      autoZoomRef.current = result._runId;
+      runZoom(false); // тільки сумнівні/флагнуті (no/partial/needs_human/low-conf) — цільово й дешевше
+    }
+  }, [result, isCompare, zoomRunning, runZoom]);
 
   const runDiff = useCallback(async () => {
     const a = aFile?.pages?.[0]?.b64, b = rFile?.pages?.[0]?.b64;
