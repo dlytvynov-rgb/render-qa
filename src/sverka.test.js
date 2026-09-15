@@ -184,8 +184,8 @@ describe("sverkaZoomComparePrompt", () => {
     expect(p).toMatch(/"conf"\s*:/);
   });
   it("без візуального не додає рядок про кроп розмітки; з візуальним — додає", () => {
-    expect(sverkaZoomComparePrompt(check, "x", false)).not.toMatch(/кроп ВІЗУАЛЬНОГО/);
-    expect(sverkaZoomComparePrompt(check, "x", true)).toMatch(/ВІЗУАЛЬНОГО ТУ-ДУ/);
+    expect(sverkaZoomComparePrompt(check, "x", false)).not.toMatch(/референс-специфікація/);
+    expect(sverkaZoomComparePrompt(check, "x", true)).toMatch(/референс-специфікація/);
   });
 });
 

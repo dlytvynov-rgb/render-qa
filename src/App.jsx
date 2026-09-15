@@ -2123,8 +2123,12 @@ function LabPage({ apiKey, lockCheckId }) {
         parts.push({ type: "text", text: `DIFF-МАПА (наступне зображення) — це РЕНДЕР ПІСЛЯ з ЧЕРВОНОЮ підсвіткою пікселів, що відрізняються від ДО (змінено ~${diffLocal.pctChanged.toFixed(1)}% кадру). Орієнтуйся на неї: якщо зона правки червона — там реально сталася зміна; якщо зона НЕ підсвічена — найімовірніше правку НЕ застосовано.` });
         parts.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: diffLocal.dataURL.split(",")[1] } });
       }
-      const p = await callAPI(parts, 1, apiKey);
-      const obj = (p && p.sverka && p.sverka[0]) || p || {};
+      let p = await callAPI(parts, 1, apiKey);
+      let obj = (p && p.sverka && p.sverka[0]) || p || {};
+      if (isCompare && (!Array.isArray(obj.changes) || obj.changes.length === 0)) {
+        p = await callAPI(parts, 1, apiKey); // порожня відповідь буває на гикавці API → один ретрай
+        obj = (p && p.sverka && p.sverka[0]) || p || {};
+      }
       const nChanges = Array.isArray(obj.changes) ? obj.changes.map(c => ({ ...c, zone: c.zone ? normalizeZone(c.zone) : null, conf: typeof c.conf === "number" ? c.conf : null })) : obj.changes;
       setResult({ ...obj, changes: nChanges, zone: obj.zone ? normalizeZone(obj.zone) : null, _ms: Math.round(Date.now() - t0), _runId: t0, _fresh: true, _raw: p });
     } catch (e) {
@@ -2156,12 +2160,14 @@ function LabPage({ apiKey, lockCheckId }) {
       const i = idxs[k], c = next[i];
       try {
         const zone = c.zone || result.zone || { x: 0, y: 0, w: 100, h: 100 };
+        const fullB = await cropRegion(bB64, { x: 0, y: 0, w: 100, h: 100 }, 0, 1100); // повний кадр (контекст)
+        const fullA = await cropRegion(aB64, { x: 0, y: 0, w: 100, h: 100 }, 0, 1100);
         const beforeCrop = await cropRegion(bB64, zone);
         const afterCrop = await cropRegion(aB64, zone);
+        const img = u => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: u.split(",")[1] } });
         const parts = [
           { type: "text", text: sverkaZoomComparePrompt(check, c.text, visFiles.length > 0) },
-          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: beforeCrop.split(",")[1] } },
-          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: afterCrop.split(",")[1] } },
+          img(fullB), img(fullA), img(beforeCrop), img(afterCrop),
         ];
         if (visFiles.length) parts.push(...filesToParts(visFiles, "ВІЗУАЛЬНИЙ ТУ-ДУ (референс-специфікація клієнта — знайди в ньому запис/еталон САМЕ для цієї правки й звір ПІСЛЯ з ним)"));
         const z = await callAPI(parts, 1, apiKey);
