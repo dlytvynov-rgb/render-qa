@@ -2205,7 +2205,7 @@ function LabPage({ apiKey, lockCheckId }) {
   const rPrev = isCompare
     ? (aFile?.preview || aFile?.pages?.[0]?.preview)
     : (rFile?.preview || rFile?.pages?.[0]?.preview);
-  const DONE_CFG = { yes: { icon: "✅", color: "var(--ok)" }, partial: { icon: "⚠️", color: "var(--warn)" }, no: { icon: "❌", color: "var(--fail)" }, regressed: { icon: "🔻", color: "var(--fail)" }, needs_human: { icon: "🧑", color: "var(--vio)" } };
+  const DONE_CFG = { yes: { icon: "✅", color: "var(--ok)" }, partial: { icon: "⚠️", color: "var(--warn)" }, no: { icon: "❌", color: "var(--fail)" }, regressed: { icon: "🔻", color: "var(--fail)" }, needs_human: { icon: "🙋", color: "var(--vio)", label: "перевір вручну" } };
 
   // ── Тест-лог: реальний статус кожної правки → TP/FP/FN (Doc Nexus, без TN у метриках) ──
   const REAL_OPTS = [
@@ -2270,7 +2270,7 @@ function LabPage({ apiKey, lockCheckId }) {
       { "Метрика": "Recall", "Значення": pct(rec) },
       { "Метрика": "F1-score", "Значення": pct(f1) },
       { "Метрика": "Accuracy", "Значення": pct(acc) },
-      { "Метрика": "🧑 з FN — машина віддала на людину (не видно на рендері)", "Значення": nhFN },
+      { "Метрика": "🙋 з FN — машина віддала на людину (не видно на рендері)", "Значення": nhFN },
       ...(anyDone ? [] : [{ "Метрика": "Примітка", "Значення": "у наборі нема реально виконаних пунктів → F1/Recall незастосовні; головне — Accuracy (частка вірних вердиктів AI)" }]),
     ];
     const wb = XLSX.utils.book_new();
@@ -2506,7 +2506,7 @@ function LabPage({ apiKey, lockCheckId }) {
                     <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, letterSpacing: "0.12em", color: "var(--dim2)" }}>ПРАВКИ ({result.changes.length})</span>
                     {total > 0 && (
                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--dim)" }}>
-                        N {total} · <b style={{ color: "var(--ok)" }}>TP {M.TP}</b> · <b style={{ color: "var(--fail)" }}>FP {M.FP}</b> · <b style={{ color: "var(--fail)" }}>FN {M.FN}</b> · <span style={{ color: "var(--dim2)" }}>TN {M.TN}</span> · P {pct(prec)} · R {pct(rec)} · <b>F1 {pct(f1)}</b> · <b style={{ color: "var(--vio)" }}>Acc {pct(acc)}</b>{nhFN > 0 && <> · <b style={{ color: "var(--vio)" }} title="з FN: машина чесно віддала на людину (не видно на рендері) — все одно рахується як промах">🧑 {nhFN}</b></>}
+                        N {total} · <b style={{ color: "var(--ok)" }}>TP {M.TP}</b> · <b style={{ color: "var(--fail)" }}>FP {M.FP}</b> · <b style={{ color: "var(--fail)" }}>FN {M.FN}</b> · <span style={{ color: "var(--dim2)" }}>TN {M.TN}</span> · P {pct(prec)} · R {pct(rec)} · <b>F1 {pct(f1)}</b> · <b style={{ color: "var(--vio)" }}>Acc {pct(acc)}</b>{nhFN > 0 && <> · <b style={{ color: "var(--vio)" }} title="з FN: машина чесно віддала на людину (не видно на рендері) — все одно рахується як промах">🙋 {nhFN}</b></>}
                       </span>
                     )}
                     {total > 0 && !anyDone && (
@@ -2536,8 +2536,9 @@ function LabPage({ apiKey, lockCheckId }) {
                     return (
                       <div key={i} style={{ padding: "9px 16px", borderBottom: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 6 }}>
                         <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-                          <span style={{ fontSize: 13, lineHeight: 1.3, flexShrink: 0 }}>{dc.icon}</span>
+                          <span style={{ fontSize: 13, lineHeight: 1.3, flexShrink: 0 }} title={dc.label || ""}>{dc.icon}</span>
                           <span style={{ fontSize: 12.5, lineHeight: 1.5, color: c.done === "yes" ? "var(--dim)" : "var(--text)", textDecoration: c.done === "yes" ? "line-through" : "none", flex: 1 }}>{c.text}</span>
+                          {c.done === "needs_human" && <span title="Не видно з цього рендера — потрібна перевірка людиною" style={{ flexShrink: 0, alignSelf: "flex-start", fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--vio)", border: "1px solid var(--vio)", borderRadius: 4, padding: "1px 5px", whiteSpace: "nowrap" }}>🙋 перевір вручну</span>}
                           {c._zoomed && <span title={c._zoomNote || ""} style={{ flexShrink: 0, alignSelf: "flex-start", fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--vio)", border: "1px solid var(--vio)", borderRadius: 4, padding: "1px 5px" }}>🔬{typeof c.conf === "number" ? ` ${c.conf}%` : ""}</span>}
                         </div>
                         {c._zoomed && c._zoomNote && <div style={{ fontSize: 10, color: "var(--dim2)", fontStyle: "italic", paddingLeft: 23, lineHeight: 1.4 }}>🔬 {c._zoomNote}</div>}
